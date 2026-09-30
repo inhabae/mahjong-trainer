@@ -62,7 +62,7 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
                 kan_count = sum(item.kind in kan_actions for item in public_replay.events[:step_index + 1])
                 replay_state = GameState(
                     round_id=round_.id, round_label=round_.label, dealer=dealer,
-                    honba=honba, kyotaku=kyotaku, scores=scores,
+                    honba=honba, kyotaku=event.kyotaku, scores=scores,
                     analyzed_player=player, turn=step_index + 1,
                     tiles_remaining=tiles_remaining,
                     concealed_hand=analyzed_hand,

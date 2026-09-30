@@ -48,6 +48,7 @@ class PublicEvent:
     kind: str
     tile: str | None = None
     raw: Any = None
+    kyotaku: int = 0
 
 
 @dataclass
@@ -86,6 +87,10 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
     # Header order is [dealer, honba, kyotaku, ...].
     replay = PublicReplay(int(meta[0]) % 4, int(meta[1]), int(meta[2]), list(scores), [tile_name(x) for x in dora], players)
     def emit(kind: str, seat: int, tile: str | None, raw: Any = None) -> None:
+        # Tenhou's riichi discard means the 1,000-point stick has been
+        # deposited. Include it starting with the declaration event snapshot.
+        if kind == "riichi":
+            replay.kyotaku += 1
         for player in players:
             if kind == "win" and player.seat == seat and player.revealed_hand is not None:
                 player.concealed_count = len(player.revealed_hand)
@@ -94,7 +99,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
                 hand_count = len(concealed_hands[player.seat])
                 player.has_drawn_tile = kind == "draw" and player.seat == seat
                 player.concealed_count = max(0, hand_count - (1 if player.has_drawn_tile else 0))
-        replay.events.append(PublicEvent(seat, kind, tile, raw))
+        replay.events.append(PublicEvent(seat, kind, tile, raw, replay.kyotaku))
         replay.event_snapshots.append(public_player_copies(players))
         replay.analyzed_hand_snapshots.append(list(concealed_hands[analyzed_player]) if analyzed_player is not None else [])
     tables = _player_tables(record)
