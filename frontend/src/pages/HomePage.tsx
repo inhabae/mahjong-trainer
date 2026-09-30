@@ -1,7 +1,25 @@
 import { Component, useEffect, useState } from "react";
 import { fetchDefaultReplay, fetchDefaultReview, fetchHealth } from "../api/client";
+import type { ActionAnalysis, Decision as ApiDecision, GameState, Meld, PlayerState, ReplayEvent, ReplayResponse, Severity } from "../types/review";
 
-type Decision = { id: string; turn: number | null; severity: "MATCH" | "MISTAKE" | "INACCURACY" | "MINOR" | null; actual: string; mortal: string; playerPolicy: string; mortalPolicy: string; shanten: string; playerUkeire: number | null; mortalUkeire: number | null; playerEffectiveTiles?: { tile: string; visible_copies: number; remaining: number }[]; mortalEffectiveTiles?: { tile: string; visible_copies: number; remaining: number }[]; playerAnalysis?: any; mortalAnalysis?: any; state?: any };
+type Decision = { source: ApiDecision; id: string; turn: number | null; severity: Severity | null; actual: string; mortal: string; playerPolicy: string; mortalPolicy: string; shanten: string; playerUkeire: number | null; mortalUkeire: number | null; playerAnalysis?: ActionAnalysis | null; mortalAnalysis?: ActionAnalysis | null; playerEffectiveTiles: ActionAnalysis["effective_tiles"]; mortalEffectiveTiles: ActionAnalysis["effective_tiles"]; state: GameState };
+interface BoardState extends GameState {
+  players: PlayerState[];
+  scores: (number | null)[];
+}
+interface DiscardRiverState { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }
+interface MahjongTableProps {
+  boardState: BoardState;
+  score: (seat: number) => number | null;
+  pond: (seat: number) => string[];
+  meldTiles: (seat: number) => Meld[];
+  closedCount: (seat: number) => number;
+  boardHand: string[];
+  drawnTile?: string | null;
+  currentActor?: number;
+  currentAction?: string;
+  drawKey: string | number;
+}
 const honorCodes: Record<string, string> = { "1": "1z", "2": "2z", "3": "3z", "4": "4z", "5": "5z", "6": "6z", "7": "7z", e: "1z", s: "2z", w: "3z", n: "4z", c: "5z", f: "6z", p: "7z" };
 const honorFiles: Record<string, string> = { "1z": "Ton", "2z": "Nan", "3z": "Shaa", "4z": "Pei", "5z": "Chun", "6z": "Hatsu", "7z": "Haku" };
 function normalizeTile(tile: string) {
@@ -44,17 +62,10 @@ function DiscardRiver({ seat, tiles, riichiIndices = [], tsumogiriIndices = [] }
     })}</div>)}
   </div>;
 }
-function calledTileIndex(meld: any): number | null {
-  if (Number.isInteger(meld.called_index)) return meld.called_index;
-  if (Number.isInteger(meld.called_tile_index)) return meld.called_tile_index;
-  const calledTile = meld.called_tile ?? meld.call_tile ?? meld.called;
-  if (calledTile && Array.isArray(meld.tiles)) {
-    const index = meld.tiles.indexOf(calledTile);
-    if (index >= 0) return index;
-  }
-  return null;
+function calledTileIndex(meld: Meld): number | null {
+  return Number.isInteger(meld.called_index) ? meld.called_index : null;
 }
-function calledTileDisplayIndex(callerSeat: number, calledFrom: number | undefined, meldSize: number): number | null {
+function calledTileDisplayIndex(callerSeat: number, calledFrom: number | null, meldSize: number): number | null {
   if (!Number.isInteger(calledFrom) || meldSize < 3) return null;
   const relative = (calledFrom! - callerSeat + 4) % 4;
   if (relative === 3) return 0;
@@ -62,11 +73,11 @@ function calledTileDisplayIndex(callerSeat: number, calledFrom: number | undefin
   if (relative === 1) return meldSize - 1;
   return null;
 }
-function MeldArea({ seat, callerSeat, melds }: { seat: Seat; callerSeat: number; melds: any[] }) {
+function MeldArea({ seat, callerSeat, melds }: { seat: Seat; callerSeat: number; melds: Meld[] }) {
   return <div className={`meld-area meld-area-${seat}`} aria-label={`${seat} melds`}>
     {melds.map((meld, meldIndex) => {
       const tiles: string[] = meld.tiles ?? [];
-      const kind = String(meld.type ?? meld.kind ?? "").toLowerCase();
+      const kind = meld.kind.toLowerCase();
       const isAnkan = kind === "ankan";
       const isKan = kind === "kan" || kind === "minkan" || kind === "daiminkan" || kind === "kakan";
       if (isAnkan) {
@@ -90,8 +101,8 @@ function MeldArea({ seat, callerSeat, melds }: { seat: Seat; callerSeat: number;
       const extraKanTile = isKan && tiles.length > 3 ? (others.pop()?.tile ?? calledItem?.tile) : undefined;
       const displayTiles = [...others];
       if (calledItem && displayIndex !== null) displayTiles.splice(displayIndex, 0, calledItem);
-      const isOpenCall = [meld.called_tile, meld.call_tile, meld.called, meld.from_seat, meld.source_seat, meld.called_from, meld.from].some((value) => value !== undefined && value !== null);
-      return <span className={`meld-group meld-${meld.type ?? meld.kind ?? "open"}`} key={`meld-${meldIndex}`}>
+      const isOpenCall = meld.called_from !== null;
+      return <span className={`meld-group meld-${meld.kind}`} key={`meld-${meldIndex}`}>
         {displayTiles.map((item) => {
           const called = isOpenCall && item.isCalled;
           return <span className={`meld-tile-slot${called ? " called-tile-slot" : ""}${called && extraKanTile ? " kan-called-stack" : ""}`} key={`${meldIndex}-${item.originalIndex}`}>
@@ -106,14 +117,14 @@ function DrawnTile({ tile, hidden, animate, eventKey }: { tile?: string; hidden:
   if (!hidden && !tile) return null;
   return <span key={eventKey} className={`drawn-tile ${animate ? "drawn-tile-animated" : ""}`}>{hidden ? <TileBack className="tile-drawn-back" /> : <Tile tile={tile!} />}</span>;
 }
-function PlayerHand({ seat, standingTiles, concealedCount, drawnTile, drawHidden, animateDraw, drawKey }: { seat: Seat; standingTiles?: string[]; concealedCount: number; drawnTile?: string; drawHidden: boolean; animateDraw: boolean; drawKey: string }) {
+function PlayerHand({ seat, standingTiles, concealedCount, drawnTile, drawHidden, animateDraw, drawKey }: { seat: Seat; standingTiles?: string[] | null; concealedCount: number; drawnTile?: string | null; drawHidden: boolean; animateDraw: boolean; drawKey: string | number }) {
   const tilesToRender = standingTiles ? sortTiles(standingTiles) : undefined;
   return <div className={`hand-tiles player-hand-${seat}`}>
     {tilesToRender
       ? tilesToRender.map((tile, index) => <Tile key={`${tile}-${index}`} tile={tile} />)
       : Array.from({ length: concealedCount }, (_, index) => <TileBack key={`back-${index}`} />)}
     <span className="draw-gap" aria-hidden="true" />
-    <span className="draw-area"><DrawnTile tile={drawnTile} hidden={drawHidden} animate={animateDraw} eventKey={`draw-${drawKey}-${seat}`} /></span>
+    <span className="draw-area"><DrawnTile tile={drawnTile ?? undefined} hidden={drawHidden} animate={animateDraw} eventKey={`draw-${drawKey}-${seat}`} /></span>
   </div>;
 }
 function tileSortValue(tile: string): number {
@@ -128,7 +139,7 @@ function tileSortValue(tile: string): number {
 function sortTiles(tiles: string[]): string[] {
   return [...tiles].sort((a, b) => tileSortValue(a) - tileSortValue(b) || a.localeCompare(b));
 }
-function WinningHand({ seat, tiles, winningTile, winType }: { seat: Seat; tiles: string[]; winningTile?: string; winType?: string }) {
+function WinningHand({ seat, tiles, winningTile, winType }: { seat: Seat; tiles: string[]; winningTile?: string | null; winType?: string | null }) {
   const sortedTiles = sortTiles(tiles);
   return <div className={`hand-tiles player-hand-${seat} winning-hand`}>
     {sortedTiles.map((tile, index) => <Tile key={`win-${tile}-${index}`} tile={tile} />)}
@@ -146,7 +157,7 @@ function CenterScore({ score }: { score: number | null }) {
   const minor = String(safeScore % 100).padStart(2, "0");
   return <b className="center-score"><strong>{major.toLocaleString()}</strong><small>{minor}</small></b>;
 }
-function PlayerZone({ seat, playerSeat, wind, score, melds, closedCount, hand, revealedHand, winningTile, winType, drawnTile, drawHidden = false, drawKey, animateDraw = false, revealHand = false, active = false }: { seat: Seat; playerSeat: number; wind: string; score: number | null; melds: any[]; closedCount: number; hand?: string[]; revealedHand?: string[]; winningTile?: string; winType?: string; drawnTile?: string; drawHidden?: boolean; drawKey: string; animateDraw?: boolean; revealHand?: boolean; active?: boolean }) {
+function PlayerZone({ seat, playerSeat, wind, score, melds, closedCount, hand, revealedHand, winningTile, winType, drawnTile, drawHidden = false, drawKey, animateDraw = false, revealHand = false, active = false }: { seat: Seat; playerSeat: number; wind: string; score: number | null; melds: Meld[]; closedCount: number; hand?: string[] | null; revealedHand?: string[] | null; winningTile?: string | null; winType?: string | null; drawnTile?: string | null; drawHidden?: boolean; drawKey: string | number; animateDraw?: boolean; revealHand?: boolean; active?: boolean }) {
   const side = seat === "left" || seat === "right";
   return <section className={`player-zone player-zone-${seat} ${active ? "player-zone-active" : ""}`}>
     <div className="player-zone-content">
@@ -164,8 +175,8 @@ function PlayerZone({ seat, playerSeat, wind, score, melds, closedCount, hand, r
 function TenboIcon({ value }: { value: 100 | 300 | 1000 }) {
   return <span className={`tenbo tenbo-${value}`} aria-label={`${value} point stick`}><i /><i /><i /><i /><i /><i /><i /><i /></span>;
 }
-function CenterInformation({ boardState, scores, winds }: { boardState: any; scores: Record<Seat, number | null>; winds: Record<Seat, string> }) {
-  const doraIndicators: string[] = boardState.dora_indicators ?? [];
+function CenterInformation({ boardState, scores, winds }: { boardState: BoardState; scores: Record<Seat, number | null>; winds: Record<Seat, string> }) {
+  const doraIndicators = boardState.dora_indicators;
   const honba = boardState.honba;
   const kyotaku = boardState.kyotaku;
   const roundLabel = boardState.round_label ? String(boardState.round_label).replace(/\s*\d+本場/g, "").trim() : "—";
@@ -187,7 +198,7 @@ function CenterInformation({ boardState, scores, winds }: { boardState: any; sco
     </div>
   </div>;
 }
-function CenterTable({ boardState, scores, winds, rivers }: { boardState: any; scores: Record<Seat, number | null>; winds: Record<Seat, string>; rivers: Record<Seat, { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }> }) {
+function CenterTable({ boardState, scores, winds, rivers }: { boardState: BoardState; scores: Record<Seat, number | null>; winds: Record<Seat, string>; rivers: Record<Seat, DiscardRiverState> }) {
   return <section className="center-table" aria-label="Mahjong center table">
     <DiscardRiver seat="top" tiles={rivers.top.tiles} riichiIndices={rivers.top.riichiIndices} tsumogiriIndices={rivers.top.tsumogiriIndices} />
     <DiscardRiver seat="left" tiles={rivers.left.tiles} riichiIndices={rivers.left.riichiIndices} tsumogiriIndices={rivers.left.tsumogiriIndices} />
@@ -196,17 +207,17 @@ function CenterTable({ boardState, scores, winds, rivers }: { boardState: any; s
     <DiscardRiver seat="bottom" tiles={rivers.bottom.tiles} riichiIndices={rivers.bottom.riichiIndices} tsumogiriIndices={rivers.bottom.tsumogiriIndices} />
   </section>;
 }
-function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHand, drawnTile, currentActor, currentAction, drawKey }: any) {
+function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHand, drawnTile, currentActor, currentAction, drawKey }: MahjongTableProps) {
   const analyzed = boardState.analyzed_player ?? 0;
   const scores = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => ({ ...result, [seat]: score(seatIndex[seat]) }), {} as Record<Seat, number | null>);
   const winds = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => {
     const windNames = ["東", "南", "西", "北"];
-    const dealer = Number.isInteger(boardState.dealer) ? boardState.dealer : 0;
+    const dealer = Number.isInteger(boardState.dealer) ? boardState.dealer! : 0;
     return { ...result, [seat]: windNames[(seatIndex[seat] - dealer + 4) % 4] };
   }, {} as Record<Seat, string>);
   const rivers = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => {
-    const player = boardState.players?.[seatIndex[seat]] ?? {};
-    return { ...result, [seat]: { tiles: pond(seatIndex[seat]), riichiIndices: player.riichi_discard_indices ?? [], tsumogiriIndices: player.tsumogiri_discard_indices ?? [] } };
+    const player = boardState.players[seatIndex[seat]];
+    return { ...result, [seat]: { tiles: pond(seatIndex[seat]), riichiIndices: player?.riichi_discard_indices ?? [], tsumogiriIndices: player?.tsumogiri_discard_indices ?? [] } };
   }, {} as Record<Seat, { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }>);
   const shouldReveal = (playerSeat: number) => currentAction === "win"
     ? currentActor === playerSeat
@@ -221,7 +232,7 @@ function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHa
   </div>;
 }
 
-function FullGameReplay({ events, analyzedPlayer, onExit }: { events: any[]; analyzedPlayer: number; onExit: () => void }) {
+function FullGameReplay({ events, analyzedPlayer, onExit }: { events: ReplayEvent[]; analyzedPlayer: number; onExit: () => void }) {
   const [index, setIndex] = useState(0);
   const [showTileDebug, setShowTileDebug] = useState(false);
   const hasEvents = Array.isArray(events) && events.length > 0;
@@ -237,7 +248,7 @@ function FullGameReplay({ events, analyzedPlayer, onExit }: { events: any[]; ana
   if (!hasEvents) return <main className="app-shell"><section className="workspace"><h1>Replay is empty</h1><p>No replayable events were returned for this game.</p></section></main>;
   const safeIndex = Math.max(0, Math.min(index, events.length - 1));
   const event = events[safeIndex];
-  const roundStarts = events.reduce((starts: number[], item: any, itemIndex: number) => {
+  const roundStarts = events.reduce<number[]>((starts, item, itemIndex) => {
     if (itemIndex === 0 || item.round_id !== events[itemIndex - 1]?.round_id) starts.push(itemIndex);
     return starts;
   }, []);
@@ -246,14 +257,14 @@ function FullGameReplay({ events, analyzedPlayer, onExit }: { events: any[]; ana
   const nextRoundIndex = currentRound < roundStarts.length - 1 ? roundStarts[currentRound + 1] : events.length - 1;
   if (!event || !event.state || !Array.isArray(event.state.players)) return <main className="app-shell"><section className="workspace"><h1>Replay event unavailable</h1><p>Event {safeIndex + 1} has an invalid state payload.</p></section></main>;
   const raw = event.state;
-  const getBoardStateFromReplayEvent = (replayEvent: any) => {
+  const getBoardStateFromReplayEvent = (replayEvent: ReplayEvent): BoardState => {
     const source = replayEvent.state;
-    const seatAt = (relativeSeat: number) => source.players[(analyzedPlayer + relativeSeat) % 4] ?? { seat: relativeSeat, discards: [], melds: [], score: 0 };
-    const players = [0, 1, 2, 3].map((relativeSeat) => {
-      const player = seatAt(relativeSeat);
+    const players = [0, 1, 2, 3].map((relativeSeat): PlayerState => {
+      const sourceSeat = source.players[(analyzedPlayer + relativeSeat) % 4];
+      const player: PlayerState = sourceSeat ?? { seat: relativeSeat, score: null, discards: [], tsumogiri_discard_indices: [], riichi_discard_indices: [], melds: [], riichi: false, concealed_count: null, has_drawn_tile: false, revealed_hand: null, is_tenpai: false };
       return {
         ...player,
-        melds: (player.melds ?? []).map((meld: any) => ({
+        melds: player.melds.map((meld: Meld) => ({
           ...meld,
           called_from: meld.called_from == null
             ? meld.called_from
@@ -261,7 +272,7 @@ function FullGameReplay({ events, analyzedPlayer, onExit }: { events: any[]; ana
         })),
       };
     });
-    return { ...source, analyzed_player: 0, dealer: typeof source.dealer === "number" ? (source.dealer - analyzedPlayer + 4) % 4 : undefined, players, scores: [0, 1, 2, 3].map((relativeSeat) => source.scores?.[(analyzedPlayer + relativeSeat) % 4] ?? 0) };
+    return { ...source, analyzed_player: 0, dealer: typeof source.dealer === "number" ? (source.dealer - analyzedPlayer + 4) % 4 : null, players, scores: [0, 1, 2, 3].map((relativeSeat) => source.scores[(analyzedPlayer + relativeSeat) % 4] ?? null) };
   };
   const state = getBoardStateFromReplayEvent(event);
   const relativeActor = typeof event.actor === "number" ? (event.actor - analyzedPlayer + 4) % 4 : analyzedPlayer;
@@ -272,26 +283,26 @@ function FullGameReplay({ events, analyzedPlayer, onExit }: { events: any[]; ana
       ? `Draw ${event.tile ?? "—"}`
       : `${event.action ?? "Unknown action"}${event.tile ? ` ${event.tile}` : ""}`;
   const discardGroups = (Object.entries(
-    (playerAnalysis?.discard_options ?? []).reduce((groups: Record<string, any[]>, option: any) => {
+    (playerAnalysis?.discard_options ?? []).reduce<Record<string, ActionAnalysis[]>>((groups, option) => {
       const key = String(option.shanten);
       (groups[key] ??= []).push(option);
       return groups;
     }, {}),
-  ) as [string, any[]][]).sort(([shantenA], [shantenB]) => Number(shantenA) - Number(shantenB));
+  ) as [string, ActionAnalysis[]][]).sort(([shantenA], [shantenB]) => Number(shantenA) - Number(shantenB));
   const score = (seat: number) => state.players?.[seat]?.score ?? state.scores?.[seat] ?? null;
   const pond = (seat: number) => state.players?.[seat]?.discards ?? [];
-  const meldTiles = (seat: number) => state.players?.[seat]?.melds ?? [];
-  const closedCount = (seat: number) => state.players?.[seat]?.concealed_count ?? (seat === state.analyzed_player && Array.isArray(state.concealed_hand) ? state.concealed_hand.length : Math.max(0, 13 - meldTiles(seat).flatMap((meld: any) => meld.tiles ?? []).length));
+  const meldTiles = (seat: number) => state.players[seat]?.melds ?? [];
+  const closedCount = (seat: number) => state.players[seat]?.concealed_count ?? (seat === state.analyzed_player ? state.concealed_hand.length : Math.max(0, 13 - meldTiles(seat).flatMap((meld) => meld.tiles).length));
   return <main className="app-shell"><header className="topbar"><div className="brand-mark"><span className="brand-seal">麻</span><div><span className="brand-name">Matsu</span><span className="brand-sub">RIICHI TRAINER</span></div></div><div className="topbar-center"><span className="eyebrow">FULL GAME REPLAY</span><span className="crumb">/ event stream · fixed player perspective</span></div><div className="topbar-actions"><button className="debug-button" onClick={() => setShowTileDebug((value) => !value)}>Debug</button></div></header>
     <section className="workspace replay-workspace"><div className="round-heading"><div><span className="eyebrow">REPLAY MODE · {state.round_label ?? "FULL GAME"}</span><h1>Full Game Replay</h1><p className="panel-note">Complete chronological event stream. Review decisions are not used in this mode.</p></div><div className="turn-display">EVENT <strong>{events.length ? `${index + 1} / ${events.length}` : "0 / 0"}</strong><span>{event.action ?? "initial_hands"} · seat {event.actor ?? analyzedPlayer}</span></div></div>
-      {showTileDebug && <section className="tile-debug" aria-label="Analyzed player debug"><b>Analyzed player perspective</b><span>{parsedMove} · perspective seat {analyzedPlayer}{event.actor !== analyzedPlayer && " · latest known 14-tile hand analysis"}</span><div className="debug-analysis"><div><small>SELECTED DISCARD</small><strong>{playerAnalysis?.discard ?? "—"}</strong></div><div><small>SHANTEN AFTER DISCARD</small><strong>{playerAnalysis?.shanten ?? "Unavailable"}</strong></div><div><small>UKEIRE AFTER DISCARD</small><strong>{playerAnalysis?.ukeire ?? "Unavailable"}</strong></div></div>{discardGroups.length > 0 ? <div className="discard-option-list"><b>Discard options grouped by resulting shanten</b>{discardGroups.map(([shanten, options]) => <div className="discard-shanten-group" key={shanten}><b>{shanten} shanten</b>{[...options].sort((a, b) => b.ukeire - a.ukeire).map((option, optionIndex) => <span key={`${option.discard}-${optionIndex}`} className={option.discard === playerAnalysis.discard ? "discard-option-selected" : ""}>{option.discard} · {option.ukeire} ukeire</span>)}</div>)}</div> : <small className="discard-options-unavailable">Discard options are unavailable until a complete player hand snapshot is recorded.</small>}</section>}
+      {showTileDebug && <section className="tile-debug" aria-label="Analyzed player debug"><b>Analyzed player perspective</b><span>{parsedMove} · perspective seat {analyzedPlayer}{event.actor !== analyzedPlayer && " · latest known 14-tile hand analysis"}</span><div className="debug-analysis"><div><small>SELECTED DISCARD</small><strong>{playerAnalysis?.discard ?? "—"}</strong></div><div><small>SHANTEN AFTER DISCARD</small><strong>{playerAnalysis?.shanten ?? "Unavailable"}</strong></div><div><small>UKEIRE AFTER DISCARD</small><strong>{playerAnalysis?.ukeire ?? "Unavailable"}</strong></div></div>{discardGroups.length > 0 ? <div className="discard-option-list"><b>Discard options grouped by resulting shanten</b>{discardGroups.map(([shanten, options]) => <div className="discard-shanten-group" key={shanten}><b>{shanten} shanten</b>{[...options].sort((a, b) => b.ukeire - a.ukeire).map((option, optionIndex) => <span key={`${option.discard}-${optionIndex}`} className={option.discard === playerAnalysis?.discard ? "discard-option-selected" : ""}>{option.discard} · {option.ukeire} ukeire</span>)}</div>)}</div> : <small className="discard-options-unavailable">Discard options are unavailable until a complete player hand snapshot is recorded.</small>}</section>}
       <div className="table-wrap"><MahjongTable boardState={state} score={score} pond={pond} meldTiles={meldTiles} closedCount={closedCount} boardHand={state.concealed_hand ?? []} drawnTile={state.drawn_tile} currentActor={relativeActor} currentAction={event.action} drawKey={safeIndex} /></div>
       <div className="replay-controls"><button onClick={() => setIndex(previousRoundIndex)} disabled={currentRound === 0}>Previous round</button><button onClick={() => setIndex(Math.max(0, index - 1))} disabled={index === 0}>Previous event</button><span><b>Round {currentRound + 1} / {roundStarts.length}</b> · event {index + 1} / {events.length} · {event.action ?? "INITIAL HANDS"}{event.tile ? ` · ${event.tile}` : ""} · seat {event.actor ?? analyzedPlayer}</span><button onClick={() => setIndex(Math.min(events.length - 1, index + 1))} disabled={index >= events.length - 1}>Next event</button><button onClick={() => setIndex(nextRoundIndex)} disabled={currentRound >= roundStarts.length - 1}>Next round</button></div>
     </section></main>;
 }
 
 export function HomePage() {
-  const [selected, setSelected] = useState(0); const [status, setStatus] = useState("checking"); const [reportDecisions, setReportDecisions] = useState<Decision[]>([]); const [sourceFile, setSourceFile] = useState("default report"); const [loading, setLoading] = useState(true); const [error, setError] = useState<string | null>(null); const [replay, setReplay] = useState<any | null>(null); const [replayError, setReplayError] = useState<string | null>(null); const [replayLoading, setReplayLoading] = useState(true); const [viewMode, setViewMode] = useState<"review" | "replay">("replay"); const [showTileDebug, setShowTileDebug] = useState(false); const decision = reportDecisions[selected];
+  const [selected, setSelected] = useState(0); const [status, setStatus] = useState("checking"); const [reportDecisions, setReportDecisions] = useState<Decision[]>([]); const [sourceFile, setSourceFile] = useState("default report"); const [loading, setLoading] = useState(true); const [error, setError] = useState<string | null>(null); const [replay, setReplay] = useState<ReplayResponse | null>(null); const [replayError, setReplayError] = useState<string | null>(null); const [replayLoading, setReplayLoading] = useState(true); const [viewMode, setViewMode] = useState<"review" | "replay">("replay"); const [showTileDebug, setShowTileDebug] = useState(false); const decision = reportDecisions[selected];
   useEffect(() => {
     fetchHealth().then((health) => setStatus(health.status)).catch(() => setStatus("offline"));
     fetchDefaultReplay().then((value) => {
@@ -300,15 +311,23 @@ export function HomePage() {
     }).catch((err) => setReplayError(err instanceof Error ? err.message : "Unable to load replay")).finally(() => setReplayLoading(false));
     fetchDefaultReview().then((review) => {
       setSourceFile(review.source_file ?? "default report");
-      const reviewDecisions = (review.decisions ?? []).filter((item: any) => item.actual_action || item.mortal_action).map((item: any, index: number): Decision => ({
-        id: item.id ?? `${item.round_id}:${item.decision_index ?? index}`, turn: item.state?.turn ?? null, severity: item.severity ?? null,
-        actual: item.actual_action ?? "—", mortal: item.mortal_action ?? "—",
+      const reviewDecisions = review.decisions.map((item): Decision => ({
+        source: item,
+        id: item.id,
+        turn: item.state.turn,
+        severity: item.severity,
+        actual: item.actual_action ?? "—",
+        mortal: item.mortal_action ?? "—",
         playerPolicy: item.mortal?.player_policy == null ? "—" : `${(item.mortal.player_policy * 100).toFixed(1)}%`,
         mortalPolicy: item.mortal?.best_policy == null ? "—" : `${(item.mortal.best_policy * 100).toFixed(1)}%`,
         shanten: `${item.analysis?.player_analysis?.shanten ?? "—"}`,
-        playerUkeire: item.analysis?.player_analysis?.ukeire ?? null, mortalUkeire: item.analysis?.mortal_analysis?.ukeire ?? null,
-        playerEffectiveTiles: item.analysis?.player_analysis?.effective_tiles, mortalEffectiveTiles: item.analysis?.mortal_analysis?.effective_tiles,
-        playerAnalysis: item.analysis?.player_analysis, mortalAnalysis: item.analysis?.mortal_analysis, state: item.state,
+        playerUkeire: item.analysis?.player_analysis?.ukeire ?? null,
+        mortalUkeire: item.analysis?.mortal_analysis?.ukeire ?? null,
+        playerAnalysis: item.analysis?.player_analysis,
+        mortalAnalysis: item.analysis?.mortal_analysis,
+        playerEffectiveTiles: item.analysis?.player_analysis?.effective_tiles ?? [],
+        mortalEffectiveTiles: item.analysis?.mortal_analysis?.effective_tiles ?? [],
+        state: item.state,
       }));
       setReportDecisions(reviewDecisions);
     }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load the default report")).finally(() => setLoading(false));
@@ -316,13 +335,13 @@ export function HomePage() {
   if (viewMode === "replay") {
     if (replayLoading) return <main className="app-shell"><section className="workspace"><h1>Full Game Replay</h1><p>Loading replay events…</p></section></main>;
     if (replayError) return <main className="app-shell"><section className="workspace"><h1>Replay unavailable</h1><p>{replayError}</p></section></main>;
-    if (!replay || !Array.isArray(replay.events)) return <main className="app-shell"><section className="workspace"><h1>Replay unavailable</h1><p>The replay payload is malformed.</p></section></main>;
-    return <ReplayErrorBoundary><FullGameReplay events={replay.events ?? []} analyzedPlayer={replay.analyzed_player ?? 0} onExit={() => setViewMode("review")} /></ReplayErrorBoundary>;
+    if (!replay) return <main className="app-shell"><section className="workspace"><h1>Replay unavailable</h1><p>The replay response is missing.</p></section></main>;
+    return <ReplayErrorBoundary><FullGameReplay events={replay.events} analyzedPlayer={replay.analyzed_player} onExit={() => setViewMode("review")} /></ReplayErrorBoundary>;
   }
   if (loading) return <main className="app-shell"><section className="workspace"><p>Loading {sourceFile}…</p></section></main>;
   if (error) return <main className="app-shell"><section className="workspace"><h1>Unable to load the default report</h1><p>{error}</p></section></main>;
   if (!decision) return <main className="app-shell"><section className="workspace"><h1>No review decisions</h1><p>{sourceFile} contains no highlighted decisions.</p></section></main>;
-  const boardState = decision.state ?? {};
+  const boardState = decision.state;
   const analyzedPlayer = boardState.analyzed_player ?? 0;
   const boardPlayers = [0, 1, 2, 3].map((relativeSeat) => {
     const sourceSeat = (analyzedPlayer + relativeSeat) % 4;
@@ -330,7 +349,7 @@ export function HomePage() {
     return {
       ...source,
       seat: relativeSeat,
-      melds: (source.melds ?? []).map((meld: any) => ({
+      melds: source.melds.map((meld: Meld) => ({
         ...meld,
         called_from: meld.called_from == null ? meld.called_from : (meld.called_from - analyzedPlayer + 4) % 4,
       })),
@@ -339,7 +358,7 @@ export function HomePage() {
   const relativeBoardState = {
     ...boardState,
     analyzed_player: 0,
-    dealer: typeof boardState.dealer === "number" ? (boardState.dealer - analyzedPlayer + 4) % 4 : undefined,
+    dealer: typeof boardState.dealer === "number" ? (boardState.dealer - analyzedPlayer + 4) % 4 : null,
     players: boardPlayers,
     scores: [0, 1, 2, 3].map((relativeSeat) => boardState.scores?.[(analyzedPlayer + relativeSeat) % 4] ?? null),
   };
@@ -350,8 +369,8 @@ export function HomePage() {
   // Preserve the aka/red-five suffix when extracting a tile from review text.
   // Without the optional `r`, 5mr was normalized to 5m and lost its Dora art.
   const actionTile = (action: string) => action.match(/([0-9][mps]r?|[1-7]z|[東南西北中發白]|[epwsfc])/u)?.[1] ?? action;
-  const meldTiles = (seat: number): any[] => boardPlayers[seat]?.melds ?? [];
-  const closedCount = (seat: number) => boardPlayers[seat]?.concealed_count ?? Math.max(0, 13 - meldTiles(seat).flatMap((meld: any) => meld.tiles ?? []).length);
+  const meldTiles = (seat: number): Meld[] => boardPlayers[seat]?.melds ?? [];
+  const closedCount = (seat: number) => boardPlayers[seat]?.concealed_count ?? Math.max(0, 13 - meldTiles(seat).flatMap((meld) => meld.tiles).length);
   return <main className="app-shell">
     <header className="topbar"><div className="brand-mark"><span className="brand-seal">麻</span><div><span className="brand-name">Matsu</span><span className="brand-sub">RIICHI TRAINER</span></div></div><div className="topbar-center"><span className="eyebrow">REVIEW ROOM</span><span className="crumb">/ East 1 · Game 01</span></div><div className="topbar-actions"><span className="api-dot" data-online={status === "ok"} /> <span>{status === "ok" ? "Synced" : "Local review"}</span><button className="debug-button" onClick={() => setShowTileDebug((value) => !value)}>Debug</button><button className="icon-button" aria-label="Settings">☼</button></div></header>
     <section className="review-layout">

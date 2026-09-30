@@ -15,8 +15,10 @@ def _header(round_: Round) -> tuple[int | None, int | None, int | None, list[int
     header = record[0] if isinstance(record, list) and record else []
     scores = record[1] if len(record) > 1 and isinstance(record[1], list) else []
     dealer = header[0] % 4 if len(header) > 0 and isinstance(header[0], int) else None
-    kyotaku = header[1] if len(header) > 1 and isinstance(header[1], int) else None
-    honba = header[2] if len(header) > 2 and isinstance(header[2], int) else None
+    # mjai-reviewer's Tenhou header is [dealer, honba, kyotaku, ...].
+    # Keep these in the same order as PublicReplay and the center display.
+    honba = header[1] if len(header) > 1 and isinstance(header[1], int) else None
+    kyotaku = header[2] if len(header) > 2 and isinstance(header[2], int) else None
     return dealer, honba, kyotaku, [x if isinstance(x, int) else None for x in scores]
 
 

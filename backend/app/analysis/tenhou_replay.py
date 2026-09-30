@@ -83,6 +83,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
     record = records[0]
     meta, scores, dora, _ura = record[:4]
     players = [PlayerState(seat=i, score=scores[i] if i < len(scores) else None) for i in range(4)]
+    # Header order is [dealer, honba, kyotaku, ...].
     replay = PublicReplay(int(meta[0]) % 4, int(meta[1]), int(meta[2]), list(scores), [tile_name(x) for x in dora], players)
     def emit(kind: str, seat: int, tile: str | None, raw: Any = None) -> None:
         for player in players:
