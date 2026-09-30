@@ -77,7 +77,21 @@ export interface DecisionAnalysis {
   };
 }
 
-export interface Decision {
+export interface PolicySummary {
+  player_policy: number | null;
+  best_policy: number | null;
+}
+
+export interface ActionEvaluation {
+  action: string;
+  q_value: number | null;
+  policy_probability_percent: number | null;
+  raw_action: string | null;
+  raw_q_value: string | null;
+  raw_policy_probability: string | null;
+}
+
+export interface ReconstructedDecision {
   id: string;
   round_id: string;
   decision_index: number;
@@ -85,13 +99,9 @@ export interface Decision {
   mortal_action: string | null;
   state: GameState;
   analysis: DecisionAnalysis | null;
-  severity: Severity | null;
-  mortal: {
-    player_policy?: number | null;
-    best_policy?: number | null;
-    [key: string]: unknown;
-  } | null;
-  actions: Record<string, unknown>[];
+  severity: Severity;
+  mortal: PolicySummary;
+  actions: ActionEvaluation[];
 }
 
 export interface ReviewResponse {
@@ -99,7 +109,7 @@ export interface ReviewResponse {
   analyzed_player: number;
   summary: Record<string, number>;
   warnings: string[];
-  decisions: Decision[];
+  decisions: ReconstructedDecision[];
 }
 
 export interface ReplayEvent {

@@ -31,7 +31,6 @@ async def default_report() -> dict:
         raise HTTPException(status_code=404, detail="Default e417 report fixture is unavailable")
     try:
         reconstructed = reconstruct_report(parse_mjai_reviewer_html(DEFAULT_REPORT.read_bytes()))
-        highlighted = [item for item in reconstructed.decisions if item.severity in {"MISTAKE", "INACCURACY"}]
         return {"source_file": DEFAULT_REPORT.name,
                 "analyzed_player": reconstructed.analyzed_player, "summary": reconstructed.summary,
                 "warnings": reconstructed.warnings,
