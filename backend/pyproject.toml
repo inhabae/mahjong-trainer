@@ -1,0 +1,24 @@
+[project]
+name = "mahjong-trainer-backend"
+version = "0.1.0"
+description = "Backend API for a personalized Riichi Mahjong training app"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "beautifulsoup4>=4.12,<5.0",
+    "python-multipart>=0.0.9,<1.0",
+    "mahjong>=1.2,<2.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27,<1.0",
+    "pytest>=8.0,<9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27,<1.0",
+    "pytest>=8.0,<9.0",
+]
