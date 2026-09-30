@@ -1,7 +1,7 @@
-import { Component, useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useState } from "react";
 import { fetchDefaultReplay, fetchDefaultReview, fetchHealth } from "../api/client";
 
-type Decision = { id: string; turn: number; severity: "MISTAKE" | "INACCURACY" | "MINOR"; actual: string; mortal: string; playerPolicy: string; mortalPolicy: string; shanten: string; playerUkeire: number; mortalUkeire: number; state?: any };
+type Decision = { id: string; turn: number | null; severity: "MATCH" | "MISTAKE" | "INACCURACY" | "MINOR" | null; actual: string; mortal: string; playerPolicy: string; mortalPolicy: string; shanten: string; playerUkeire: number | null; mortalUkeire: number | null; playerEffectiveTiles?: { tile: string; visible_copies: number; remaining: number }[]; mortalEffectiveTiles?: { tile: string; visible_copies: number; remaining: number }[]; playerAnalysis?: any; mortalAnalysis?: any; state?: any };
 const honorCodes: Record<string, string> = { "1": "1z", "2": "2z", "3": "3z", "4": "4z", "5": "5z", "6": "6z", "7": "7z", e: "1z", s: "2z", w: "3z", n: "4z", c: "5z", f: "6z", p: "7z" };
 const honorFiles: Record<string, string> = { "1z": "Ton", "2z": "Nan", "3z": "Shaa", "4z": "Pei", "5z": "Chun", "6z": "Hatsu", "7z": "Haku" };
 function normalizeTile(tile: string) {
@@ -19,10 +19,6 @@ function tileUrl(tile: string) {
   const rank = match[1] === "0" ? "5" : match[1];
   const file = `${suit}${rank}${match[1] === "0" ? "-Dora" : ""}`;
   return `/tiles/Regular/${file}.svg`;
-}
-function tileDebugInfo(tile: string) {
-  const normalized = normalizeTile(tile);
-  return { raw: tile, interpreted: normalized, asset: tileUrl(tile) ?? "(no asset)" };
 }
 function Tile({ tile, muted = false, selected = false }: { tile: string; muted?: boolean; selected?: boolean }) { return <span className={`mahjong-tile ${muted ? "tile-muted" : ""} ${selected ? "tile-selected" : ""}`} title={tile}><img src={tileUrl(tile)} alt={tile} /></span>; }
 function TileBack({ className = "", ariaLabel }: { className?: string; ariaLabel?: string }) { return <span className={`tile-back ${className}`} aria-hidden={ariaLabel ? undefined : true} aria-label={ariaLabel}><img src="/tiles/Regular/Back.svg" alt="" /></span>; }
@@ -140,16 +136,17 @@ function WinningHand({ seat, tiles, winningTile, winType }: { seat: Seat; tiles:
     <span className="draw-area">{winType === "tsumo" && winningTile ? <Tile tile={winningTile} /> : null}</span>
   </div>;
 }
-function SeatScore({ seat, wind, score }: { seat: Seat; wind: string; score: number }) {
-  return <div className={`seat-score seat-score-${seat}`}><span>{wind}</span><b>{score.toLocaleString()}</b></div>;
+function SeatScore({ seat, wind, score }: { seat: Seat; wind: string; score: number | null }) {
+  return <div className={`seat-score seat-score-${seat}`}><span>{wind}</span><b>{score == null ? "—" : score.toLocaleString()}</b></div>;
 }
-function CenterScore({ score }: { score: number }) {
+function CenterScore({ score }: { score: number | null }) {
+  if (score == null) return <b className="center-score"><strong>—</strong></b>;
   const safeScore = Math.max(0, Math.round(score));
   const major = Math.floor(safeScore / 100);
   const minor = String(safeScore % 100).padStart(2, "0");
   return <b className="center-score"><strong>{major.toLocaleString()}</strong><small>{minor}</small></b>;
 }
-function PlayerZone({ seat, playerSeat, wind, score, melds, closedCount, hand, revealedHand, winningTile, winType, drawnTile, drawHidden = false, drawKey, animateDraw = false, revealHand = false, active = false }: { seat: Seat; playerSeat: number; wind: string; score: number; melds: any[]; closedCount: number; hand?: string[]; revealedHand?: string[]; winningTile?: string; winType?: string; drawnTile?: string; drawHidden?: boolean; drawKey: string; animateDraw?: boolean; revealHand?: boolean; active?: boolean }) {
+function PlayerZone({ seat, playerSeat, wind, score, melds, closedCount, hand, revealedHand, winningTile, winType, drawnTile, drawHidden = false, drawKey, animateDraw = false, revealHand = false, active = false }: { seat: Seat; playerSeat: number; wind: string; score: number | null; melds: any[]; closedCount: number; hand?: string[]; revealedHand?: string[]; winningTile?: string; winType?: string; drawnTile?: string; drawHidden?: boolean; drawKey: string; animateDraw?: boolean; revealHand?: boolean; active?: boolean }) {
   const side = seat === "left" || seat === "right";
   return <section className={`player-zone player-zone-${seat} ${active ? "player-zone-active" : ""}`}>
     <div className="player-zone-content">
@@ -167,11 +164,11 @@ function PlayerZone({ seat, playerSeat, wind, score, melds, closedCount, hand, r
 function TenboIcon({ value }: { value: 100 | 300 | 1000 }) {
   return <span className={`tenbo tenbo-${value}`} aria-label={`${value} point stick`}><i /><i /><i /><i /><i /><i /><i /><i /></span>;
 }
-function CenterInformation({ boardState, scores, winds }: { boardState: any; scores: Record<Seat, number>; winds: Record<Seat, string> }) {
+function CenterInformation({ boardState, scores, winds }: { boardState: any; scores: Record<Seat, number | null>; winds: Record<Seat, string> }) {
   const doraIndicators: string[] = boardState.dora_indicators ?? [];
-  const honba = Number(boardState.honba ?? 0);
-  const kyotaku = Number(boardState.kyotaku ?? 0);
-  const roundLabel = String(boardState.round_label ?? "東 1局").replace(/\s*\d+本場/g, "").trim();
+  const honba = boardState.honba;
+  const kyotaku = boardState.kyotaku;
+  const roundLabel = boardState.round_label ? String(boardState.round_label).replace(/\s*\d+本場/g, "").trim() : "—";
   return <div className="center-information" aria-label="Round information">
     <div className="center-seat-score center-seat-score-top"><div className="center-seat-score-inner"><span>{winds.top}</span><CenterScore score={scores.top} /></div></div>
     <div className="center-seat-score center-seat-score-left"><div className="center-seat-score-inner"><span>{winds.left}</span><CenterScore score={scores.left} /></div></div>
@@ -179,9 +176,9 @@ function CenterInformation({ boardState, scores, winds }: { boardState: any; sco
     <div className="center-seat-score center-seat-score-bottom"><div className="center-seat-score-inner"><span>{winds.bottom}</span><CenterScore score={scores.bottom} /></div></div>
     <div className="center-core">
       <div className="center-round">{roundLabel}</div>
-      <div className="center-counters"><span className="center-tiles-left"><small>×</small><span className="center-tiles-left-value">{boardState.tiles_remaining ?? 70}</span></span><div className="center-sticks" aria-label={`${kyotaku} riichi sticks and ${honba} honba counters`}>
-        <div className="tenbo-row"><TenboIcon value={1000} /><span>× {kyotaku}</span></div>
-        <div className="tenbo-row"><TenboIcon value={300} /><span>× {honba}</span></div>
+      <div className="center-counters"><span className="center-tiles-left"><small>×</small><span className="center-tiles-left-value">{boardState.tiles_remaining ?? "—"}</span></span><div className="center-sticks" aria-label={`${kyotaku ?? "unknown"} riichi sticks and ${honba ?? "unknown"} honba counters`}>
+        <div className="tenbo-row"><TenboIcon value={1000} /><span>× {kyotaku ?? "—"}</span></div>
+        <div className="tenbo-row"><TenboIcon value={300} /><span>× {honba ?? "—"}</span></div>
       </div></div>
       <div className="center-dora" aria-label="Dora indicators">{Array.from({ length: 5 }, (_, index) => {
         const tile = doraIndicators[index];
@@ -190,7 +187,7 @@ function CenterInformation({ boardState, scores, winds }: { boardState: any; sco
     </div>
   </div>;
 }
-function CenterTable({ boardState, scores, winds, rivers }: { boardState: any; scores: Record<Seat, number>; winds: Record<Seat, string>; rivers: Record<Seat, { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }> }) {
+function CenterTable({ boardState, scores, winds, rivers }: { boardState: any; scores: Record<Seat, number | null>; winds: Record<Seat, string>; rivers: Record<Seat, { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }> }) {
   return <section className="center-table" aria-label="Mahjong center table">
     <DiscardRiver seat="top" tiles={rivers.top.tiles} riichiIndices={rivers.top.riichiIndices} tsumogiriIndices={rivers.top.tsumogiriIndices} />
     <DiscardRiver seat="left" tiles={rivers.left.tiles} riichiIndices={rivers.left.riichiIndices} tsumogiriIndices={rivers.left.tsumogiriIndices} />
@@ -201,7 +198,7 @@ function CenterTable({ boardState, scores, winds, rivers }: { boardState: any; s
 }
 function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHand, drawnTile, currentActor, currentAction, drawKey }: any) {
   const analyzed = boardState.analyzed_player ?? 0;
-  const scores = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => ({ ...result, [seat]: score(seatIndex[seat]) }), {} as Record<Seat, number>);
+  const scores = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => ({ ...result, [seat]: score(seatIndex[seat]) }), {} as Record<Seat, number | null>);
   const winds = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => {
     const windNames = ["東", "南", "西", "北"];
     const dealer = Number.isInteger(boardState.dealer) ? boardState.dealer : 0;
@@ -268,13 +265,26 @@ function FullGameReplay({ events, analyzedPlayer, onExit }: { events: any[]; ana
   };
   const state = getBoardStateFromReplayEvent(event);
   const relativeActor = typeof event.actor === "number" ? (event.actor - analyzedPlayer + 4) % 4 : analyzedPlayer;
-  const score = (seat: number) => state.players?.[seat]?.score ?? state.scores?.[seat] ?? 0;
+  const playerAnalysis = event.player_perspective_analysis;
+  const parsedMove = event.action === "discard" || event.action === "dahai"
+    ? `Discard ${event.tile ?? "—"}`
+    : event.action === "draw"
+      ? `Draw ${event.tile ?? "—"}`
+      : `${event.action ?? "Unknown action"}${event.tile ? ` ${event.tile}` : ""}`;
+  const discardGroups = (Object.entries(
+    (playerAnalysis?.discard_options ?? []).reduce((groups: Record<string, any[]>, option: any) => {
+      const key = String(option.shanten);
+      (groups[key] ??= []).push(option);
+      return groups;
+    }, {}),
+  ) as [string, any[]][]).sort(([shantenA], [shantenB]) => Number(shantenA) - Number(shantenB));
+  const score = (seat: number) => state.players?.[seat]?.score ?? state.scores?.[seat] ?? null;
   const pond = (seat: number) => state.players?.[seat]?.discards ?? [];
   const meldTiles = (seat: number) => state.players?.[seat]?.melds ?? [];
-  const closedCount = (seat: number) => state.players?.[seat]?.concealed_count ?? Math.max(0, 13 - meldTiles(seat).flatMap((meld: any) => meld.tiles ?? []).length);
-  return <main className="app-shell"><header className="topbar"><div className="brand-mark"><span className="brand-seal">麻</span><div><span className="brand-name">Matsu</span><span className="brand-sub">RIICHI TRAINER</span></div></div><div className="topbar-center"><span className="eyebrow">FULL GAME REPLAY</span><span className="crumb">/ event stream · fixed player perspective</span></div><div className="topbar-actions"><button className="debug-button" onClick={() => setShowTileDebug((value) => !value)}>Tile debug</button></div></header>
+  const closedCount = (seat: number) => state.players?.[seat]?.concealed_count ?? (seat === state.analyzed_player && Array.isArray(state.concealed_hand) ? state.concealed_hand.length : Math.max(0, 13 - meldTiles(seat).flatMap((meld: any) => meld.tiles ?? []).length));
+  return <main className="app-shell"><header className="topbar"><div className="brand-mark"><span className="brand-seal">麻</span><div><span className="brand-name">Matsu</span><span className="brand-sub">RIICHI TRAINER</span></div></div><div className="topbar-center"><span className="eyebrow">FULL GAME REPLAY</span><span className="crumb">/ event stream · fixed player perspective</span></div><div className="topbar-actions"><button className="debug-button" onClick={() => setShowTileDebug((value) => !value)}>Debug</button></div></header>
     <section className="workspace replay-workspace"><div className="round-heading"><div><span className="eyebrow">REPLAY MODE · {state.round_label ?? "FULL GAME"}</span><h1>Full Game Replay</h1><p className="panel-note">Complete chronological event stream. Review decisions are not used in this mode.</p></div><div className="turn-display">EVENT <strong>{events.length ? `${index + 1} / ${events.length}` : "0 / 0"}</strong><span>{event.action ?? "initial_hands"} · seat {event.actor ?? analyzedPlayer}</span></div></div>
-      {showTileDebug && <section className="tile-debug" aria-label="Replay text debug"><b>Replay text debug</b><span>Raw source chunk for event {safeIndex + 1}</span><pre>{typeof event.raw === "string" ? event.raw : JSON.stringify(event.raw ?? { action: event.action, actor: event.actor, tile: event.tile }, null, 2)}</pre><span>Derived fields: action={event.action ?? "(none)"} · actor={event.actor ?? "(none)"} · tile={event.tile ?? "(none)"}</span></section>}
+      {showTileDebug && <section className="tile-debug" aria-label="Analyzed player debug"><b>Analyzed player perspective</b><span>{parsedMove} · perspective seat {analyzedPlayer}{event.actor !== analyzedPlayer && " · latest known 14-tile hand analysis"}</span><div className="debug-analysis"><div><small>SELECTED DISCARD</small><strong>{playerAnalysis?.discard ?? "—"}</strong></div><div><small>SHANTEN AFTER DISCARD</small><strong>{playerAnalysis?.shanten ?? "Unavailable"}</strong></div><div><small>UKEIRE AFTER DISCARD</small><strong>{playerAnalysis?.ukeire ?? "Unavailable"}</strong></div></div>{discardGroups.length > 0 ? <div className="discard-option-list"><b>Discard options grouped by resulting shanten</b>{discardGroups.map(([shanten, options]) => <div className="discard-shanten-group" key={shanten}><b>{shanten} shanten</b>{[...options].sort((a, b) => b.ukeire - a.ukeire).map((option, optionIndex) => <span key={`${option.discard}-${optionIndex}`} className={option.discard === playerAnalysis.discard ? "discard-option-selected" : ""}>{option.discard} · {option.ukeire} ukeire</span>)}</div>)}</div> : <small className="discard-options-unavailable">Discard options are unavailable until a complete player hand snapshot is recorded.</small>}</section>}
       <div className="table-wrap"><MahjongTable boardState={state} score={score} pond={pond} meldTiles={meldTiles} closedCount={closedCount} boardHand={state.concealed_hand ?? []} drawnTile={state.drawn_tile} currentActor={relativeActor} currentAction={event.action} drawKey={safeIndex} /></div>
       <div className="replay-controls"><button onClick={() => setIndex(previousRoundIndex)} disabled={currentRound === 0}>Previous round</button><button onClick={() => setIndex(Math.max(0, index - 1))} disabled={index === 0}>Previous event</button><span><b>Round {currentRound + 1} / {roundStarts.length}</b> · event {index + 1} / {events.length} · {event.action ?? "INITIAL HANDS"}{event.tile ? ` · ${event.tile}` : ""} · seat {event.actor ?? analyzedPlayer}</span><button onClick={() => setIndex(Math.min(events.length - 1, index + 1))} disabled={index >= events.length - 1}>Next event</button><button onClick={() => setIndex(nextRoundIndex)} disabled={currentRound >= roundStarts.length - 1}>Next round</button></div>
     </section></main>;
@@ -282,7 +292,6 @@ function FullGameReplay({ events, analyzedPlayer, onExit }: { events: any[]; ana
 
 export function HomePage() {
   const [selected, setSelected] = useState(0); const [status, setStatus] = useState("checking"); const [reportDecisions, setReportDecisions] = useState<Decision[]>([]); const [sourceFile, setSourceFile] = useState("default report"); const [loading, setLoading] = useState(true); const [error, setError] = useState<string | null>(null); const [replay, setReplay] = useState<any | null>(null); const [replayError, setReplayError] = useState<string | null>(null); const [replayLoading, setReplayLoading] = useState(true); const [viewMode, setViewMode] = useState<"review" | "replay">("replay"); const [showTileDebug, setShowTileDebug] = useState(false); const decision = reportDecisions[selected];
-  const visible = useMemo(() => ({ "8p": 0, "5p": 0 }), []);
   useEffect(() => {
     fetchHealth().then((health) => setStatus(health.status)).catch(() => setStatus("offline"));
     fetchDefaultReplay().then((value) => {
@@ -291,28 +300,17 @@ export function HomePage() {
     }).catch((err) => setReplayError(err instanceof Error ? err.message : "Unable to load replay")).finally(() => setReplayLoading(false));
     fetchDefaultReview().then((review) => {
       setSourceFile(review.source_file ?? "default report");
-      const reviewDecisions = (review.decisions ?? []).map((item: any, index: number): Decision => ({
-        id: item.id ?? `${item.round_id}:${item.decision_index ?? index}`, turn: item.state?.turn ?? 0, severity: item.severity,
+      const reviewDecisions = (review.decisions ?? []).filter((item: any) => item.actual_action || item.mortal_action).map((item: any, index: number): Decision => ({
+        id: item.id ?? `${item.round_id}:${item.decision_index ?? index}`, turn: item.state?.turn ?? null, severity: item.severity ?? null,
         actual: item.actual_action ?? "—", mortal: item.mortal_action ?? "—",
-        playerPolicy: `${(((item.mortal ?? {}).player_policy ?? 0) * 100).toFixed(1)}%`,
-        mortalPolicy: `${(((item.mortal ?? {}).best_policy ?? 0) * 100).toFixed(1)}%`,
-        shanten: `${item.analysis?.player?.shanten ?? "—"}`,
-        playerUkeire: item.analysis?.player?.ukeire ?? 0, mortalUkeire: item.analysis?.mortal?.ukeire ?? 0, state: item.state,
+        playerPolicy: item.mortal?.player_policy == null ? "—" : `${(item.mortal.player_policy * 100).toFixed(1)}%`,
+        mortalPolicy: item.mortal?.best_policy == null ? "—" : `${(item.mortal.best_policy * 100).toFixed(1)}%`,
+        shanten: `${item.analysis?.player_analysis?.shanten ?? "—"}`,
+        playerUkeire: item.analysis?.player_analysis?.ukeire ?? null, mortalUkeire: item.analysis?.mortal_analysis?.ukeire ?? null,
+        playerEffectiveTiles: item.analysis?.player_analysis?.effective_tiles, mortalEffectiveTiles: item.analysis?.mortal_analysis?.effective_tiles,
+        playerAnalysis: item.analysis?.player_analysis, mortalAnalysis: item.analysis?.mortal_analysis, state: item.state,
       }));
-      const mapped = review.replay_steps?.length ? review.replay_steps.map((step: any, index: number): Decision => ({
-        id: `${step.round_id}:${String(index + 1).padStart(3, "0")}`,
-        turn: step.state?.turn ?? index + 1,
-        severity: "MINOR",
-        actual: `${step.action}${step.tile ? ` ${step.tile}` : ""}`,
-        mortal: `PLAYER ${step.actor + 1}`,
-        playerPolicy: "",
-        mortalPolicy: "",
-        shanten: "—",
-        playerUkeire: 0,
-        mortalUkeire: 0,
-        state: step.state,
-      })) : reviewDecisions;
-      setReportDecisions(mapped);
+      setReportDecisions(reviewDecisions);
     }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load the default report")).finally(() => setLoading(false));
   }, []);
   if (viewMode === "replay") {
@@ -328,7 +326,7 @@ export function HomePage() {
   const analyzedPlayer = boardState.analyzed_player ?? 0;
   const boardPlayers = [0, 1, 2, 3].map((relativeSeat) => {
     const sourceSeat = (analyzedPlayer + relativeSeat) % 4;
-    const source = boardState.players?.[sourceSeat] ?? { seat: sourceSeat, discards: [], melds: [], score: 0 };
+    const source = boardState.players?.[sourceSeat] ?? { seat: sourceSeat, discards: [], melds: [], score: null };
     return {
       ...source,
       seat: relativeSeat,
@@ -343,25 +341,25 @@ export function HomePage() {
     analyzed_player: 0,
     dealer: typeof boardState.dealer === "number" ? (boardState.dealer - analyzedPlayer + 4) % 4 : undefined,
     players: boardPlayers,
-    scores: [0, 1, 2, 3].map((relativeSeat) => boardState.scores?.[(analyzedPlayer + relativeSeat) % 4] ?? 0),
+    scores: [0, 1, 2, 3].map((relativeSeat) => boardState.scores?.[(analyzedPlayer + relativeSeat) % 4] ?? null),
   };
   const boardHand: string[] = relativeBoardState.concealed_hand ?? [];
   const drawnTile = relativeBoardState.drawn_tile;
-  const score = (seat: number) => boardPlayers[seat]?.score ?? relativeBoardState.scores?.[seat] ?? 0;
+  const score = (seat: number) => boardPlayers[seat]?.score ?? relativeBoardState.scores?.[seat] ?? null;
   const pond = (seat: number) => boardPlayers[seat]?.discards ?? [];
   // Preserve the aka/red-five suffix when extracting a tile from review text.
   // Without the optional `r`, 5mr was normalized to 5m and lost its Dora art.
-  const actionTile = (action: string) => action.match(/([0-9][mps]|[1-7]z|[東南西北中發白]|[epwsfc])/u)?.[1] ?? action;
+  const actionTile = (action: string) => action.match(/([0-9][mps]r?|[1-7]z|[東南西北中發白]|[epwsfc])/u)?.[1] ?? action;
   const meldTiles = (seat: number): any[] => boardPlayers[seat]?.melds ?? [];
   const closedCount = (seat: number) => boardPlayers[seat]?.concealed_count ?? Math.max(0, 13 - meldTiles(seat).flatMap((meld: any) => meld.tiles ?? []).length);
   return <main className="app-shell">
-    <header className="topbar"><div className="brand-mark"><span className="brand-seal">麻</span><div><span className="brand-name">Matsu</span><span className="brand-sub">RIICHI TRAINER</span></div></div><div className="topbar-center"><span className="eyebrow">REVIEW ROOM</span><span className="crumb">/ East 1 · Game 01</span></div><div className="topbar-actions"><span className="api-dot" data-online={status === "ok"} /> <span>{status === "ok" ? "Synced" : "Local review"}</span><button className="debug-button" onClick={() => setShowTileDebug((value) => !value)}>Tile debug</button><button className="icon-button" aria-label="Settings">☼</button></div></header>
+    <header className="topbar"><div className="brand-mark"><span className="brand-seal">麻</span><div><span className="brand-name">Matsu</span><span className="brand-sub">RIICHI TRAINER</span></div></div><div className="topbar-center"><span className="eyebrow">REVIEW ROOM</span><span className="crumb">/ East 1 · Game 01</span></div><div className="topbar-actions"><span className="api-dot" data-online={status === "ok"} /> <span>{status === "ok" ? "Synced" : "Local review"}</span><button className="debug-button" onClick={() => setShowTileDebug((value) => !value)}>Debug</button><button className="icon-button" aria-label="Settings">☼</button></div></header>
     <section className="review-layout">
-      <aside className="timeline-panel"><div className="panel-kicker">REPLAY <span>{String(reportDecisions.length).padStart(2, "0")}</span></div><h2>Game replay</h2><p className="panel-note">Every public state from {sourceFile}.</p><div className="decision-list">{reportDecisions.map((item, index) => <button key={item.id} onClick={() => setSelected(index)} className={`decision-row ${selected === index ? "decision-active" : ""}`}><span className={`severity-mark severity-${item.severity.toLowerCase()}`} /><span className="decision-copy"><span className="decision-id">{item.id} <small>TURN {item.turn}</small></span><span>{item.actual} <i>·</i> {item.mortal}</span></span><span className="decision-percent">{item.playerPolicy}</span></button>)}</div></aside>
-      <section className="workspace"><div className="round-heading"><div><span className="eyebrow">EAST 1 · ROUND 01</span><h1>Decision <em>{decision.id}</em><span className={`severity-pill ${decision.severity.toLowerCase()}`}>{decision.severity}</span></h1><button className="replay-launch" onClick={() => setViewMode("replay")} disabled={!replay}>Full Game Replay</button></div><div className="turn-display">TURN <strong>{String(decision.turn).padStart(2, "0")}</strong><span>⟵ use ← → to browse</span></div></div>
-        {showTileDebug && <section className="tile-debug" aria-label="Tile rendering debug"><b>Tile rendering debug</b><span>Raw text → interpreted tile → asset</span>{["c", "p", "5z", "7z", "0m", "0p", "0s", "5m", "5p", "5s"].map((tile) => { const info = tileDebugInfo(tile); return <div key={tile}><Tile tile={tile} /><code>{info.raw} → {info.interpreted} → {info.asset}</code></div>; })}</section>}
+      <aside className="timeline-panel"><div className="panel-kicker">DECISIONS <span>{String(reportDecisions.length).padStart(2, "0")}</span></div><h2>Game review</h2><p className="panel-note">Analyzed decisions from {sourceFile}.</p><div className="decision-list">{reportDecisions.map((item, index) => <button key={item.id} onClick={() => setSelected(index)} className={`decision-row ${selected === index ? "decision-active" : ""}`}><span className={`severity-mark severity-${(item.severity ?? "minor").toLowerCase()}`} /><span className="decision-copy"><span className="decision-id">{item.id} <small>TURN {item.turn ?? "—"}</small></span><span>{item.actual} <i>·</i> {item.mortal}</span></span><span className="decision-percent">{item.playerPolicy}</span></button>)}</div></aside>
+      <section className="workspace"><div className="round-heading"><div><span className="eyebrow">{boardState.round_label ?? "ROUND —"}</span><h1>Decision <em>{decision.id}</em>{decision.severity && <span className={`severity-pill ${decision.severity.toLowerCase()}`}>{decision.severity}</span>}</h1><button className="replay-launch" onClick={() => setViewMode("replay")} disabled={!replay}>Full Game Replay</button></div><div className="turn-display">TURN <strong>{decision.turn == null ? "—" : String(decision.turn).padStart(2, "0")}</strong><span>⟵ use ← → to browse</span></div></div>
+        {showTileDebug && <section className="tile-debug" aria-label="Analyzed player debug"><b>Analyzed player perspective</b><span>After discard · seat {analyzedPlayer}</span><div className="debug-analysis debug-action-comparison"><div><small>YOUR MOVE · SHANTEN / UKEIRE</small><strong>{decision.playerAnalysis?.shanten ?? "Unavailable"} / {decision.playerUkeire ?? "Unavailable"}</strong><small>{decision.playerEffectiveTiles?.map((item) => `${item.tile} ×${item.remaining}`).join(" · ") || "No effective tiles reported"}</small></div><div><small>MORTAL MOVE · SHANTEN / UKEIRE</small><strong>{decision.mortalAnalysis?.shanten ?? "Unavailable"} / {decision.mortalUkeire ?? "Unavailable"}</strong><small>{decision.mortalEffectiveTiles?.map((item) => `${item.tile} ×${item.remaining}`).join(" · ") || "No effective tiles reported"}</small></div></div></section>}
         <div className="table-wrap"><MahjongTable boardState={relativeBoardState} score={score} pond={pond} meldTiles={meldTiles} closedCount={closedCount} boardHand={boardHand} drawnTile={drawnTile} drawKey={decision.id} /></div>
-        <section className="comparison-card"><div className="comparison-title"><span className="eyebrow">ACTION COMPARISON</span><span className="confidence">MORTAL CONFIDENCE <b>{decision.mortalPolicy}</b></span></div><div className="move-compare"><div className="move-block yours"><span className="move-label">YOUR MOVE</span><strong>{decision.actual}</strong><span className="move-policy">{decision.playerPolicy} policy</span></div><div className="versus">VS</div><div className="move-block mortal"><span className="move-label">MORTAL'S MOVE</span><strong>{decision.mortal}</strong><span className="move-policy">preferred action</span></div></div><div className="analysis-strip"><div><span className="analysis-label">UKEIRE</span><b>{decision.playerUkeire}</b><small>you</small><i>→</i><b className="good">{decision.mortalUkeire}</b><small>Mortal</small></div><div><span className="analysis-label">VISIBLE</span><Tile tile={decision.actual} muted /><span>× {visible[decision.actual as keyof typeof visible] ?? 0}</span><i>·</i><Tile tile={decision.mortal} muted /><span>× {visible[decision.mortal as keyof typeof visible] ?? 0}</span></div><button className="details-button">View detail ↗</button></div></section>
+        <section className="comparison-card"><div className="comparison-title"><span className="eyebrow">ACTION COMPARISON</span><span className="confidence">MORTAL CONFIDENCE <b>{decision.mortalPolicy}</b></span></div><div className="move-compare"><div className="move-block yours"><span className="move-label">YOUR MOVE</span><strong>{decision.actual}</strong><span className="move-policy">{decision.playerPolicy} policy</span></div><div className="versus">VS</div><div className="move-block mortal"><span className="move-label">MORTAL'S MOVE</span><strong>{decision.mortal}</strong><span className="move-policy">preferred action</span></div></div><div className="analysis-strip"><div><span className="analysis-label">UKEIRE</span><b>{decision.playerUkeire ?? "—"}</b><small>you</small><i>→</i><b className="good">{decision.mortalUkeire ?? "—"}</b><small>Mortal</small></div><div><span className="analysis-label">VISIBLE</span><Tile tile={actionTile(decision.actual)} muted /><span>× {decision.playerEffectiveTiles?.find((item) => item.tile === normalizeTile(actionTile(decision.actual)))?.visible_copies ?? "—"}</span><i>·</i><Tile tile={actionTile(decision.mortal)} muted /><span>× {decision.mortalEffectiveTiles?.find((item) => item.tile === normalizeTile(actionTile(decision.mortal)))?.visible_copies ?? "—"}</span></div><button className="details-button">View detail ↗</button></div></section>
       </section>
     </section>
   </main>;
