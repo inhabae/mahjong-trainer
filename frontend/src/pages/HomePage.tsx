@@ -2,15 +2,15 @@ import { Component, useEffect, useMemo, useState } from "react";
 import { fetchDefaultReplay, fetchDefaultReview, fetchHealth } from "../api/client";
 
 type Decision = { id: string; turn: number; severity: "MISTAKE" | "INACCURACY" | "MINOR"; actual: string; mortal: string; playerPolicy: string; mortalPolicy: string; shanten: string; playerUkeire: number; mortalUkeire: number; state?: any };
-const regularTileFiles: Record<string, string> = {
-  "東": "Ton", "南": "Nan", "西": "Shaa", "北": "Pei", "中": "Chun", "發": "Hatsu", "白": "Haku",
-};
+const honorCodes: Record<string, string> = { "1": "1z", "2": "2z", "3": "3z", "4": "4z", "5": "5z", "6": "6z", "7": "7z", e: "1z", s: "2z", w: "3z", n: "4z", c: "5z", f: "6z", p: "7z" };
+const honorFiles: Record<string, string> = { "1z": "Ton", "2z": "Nan", "3z": "Shaa", "4z": "Pei", "5z": "Chun", "6z": "Hatsu", "7z": "Haku" };
+function normalizeTile(tile: string) {
+  if (/^5[mps]r$/.test(tile)) return `0${tile[1]}`;
+  return honorCodes[tile] ?? tile;
+}
 function tileUrl(tile: string) {
   if (typeof tile !== "string" || !tile) return undefined;
-  if (/^5[mps]r$/.test(tile)) tile = `0${tile[1]}`;
-  const honorCodes: Record<string, string> = { "1": "1z", "2": "2z", "3": "3z", "4": "4z", "5": "5z", "6": "6z", "7": "7z", e: "1z", s: "2z", w: "3z", n: "4z", c: "5z", f: "6z", p: "7z" };
-  const honorFiles: Record<string, string> = { "1z": "Ton", "2z": "Nan", "3z": "Shaa", "4z": "Pei", "5z": "Chun", "6z": "Hatsu", "7z": "Haku" };
-  const normalized = honorCodes[tile] ?? tile;
+  const normalized = normalizeTile(tile);
   const honorFile = honorFiles[normalized];
   if (honorFile) return `/tiles/Regular/${honorFile}.svg`;
   const match = normalized.match(/^([0-9])([mps])$/);
@@ -21,8 +21,7 @@ function tileUrl(tile: string) {
   return `/tiles/Regular/${file}.svg`;
 }
 function tileDebugInfo(tile: string) {
-  const honorCodes: Record<string, string> = { "1": "1z", "2": "2z", "3": "3z", "4": "4z", "5": "5z", "6": "6z", "7": "7z", e: "1z", s: "2z", w: "3z", n: "4z", c: "5z", f: "6z", p: "7z" };
-  const normalized = honorCodes[tile] ?? tile;
+  const normalized = normalizeTile(tile);
   return { raw: tile, interpreted: normalized, asset: tileUrl(tile) ?? "(no asset)" };
 }
 function Tile({ tile, muted = false, selected = false }: { tile: string; muted?: boolean; selected?: boolean }) { return <span className={`mahjong-tile ${muted ? "tile-muted" : ""} ${selected ? "tile-selected" : ""}`} title={tile}><img src={tileUrl(tile)} alt={tile} /></span>; }
@@ -36,7 +35,7 @@ class ReplayErrorBoundary extends Component<{ children: React.ReactNode }, { err
   render() { return this.state.error ? <main className="app-shell"><section className="workspace"><h1>Replay could not render</h1><p>{this.state.error}</p></section></main> : this.props.children; }
 }
 
-function DiscardRiver({ seat, tiles, riichiIndices = [] }: { seat: Seat; tiles: string[]; riichiIndices?: number[] }) {
+function DiscardRiver({ seat, tiles, riichiIndices = [], tsumogiriIndices = [] }: { seat: Seat; tiles: string[]; riichiIndices?: number[]; tsumogiriIndices?: number[] }) {
   const rows: { tile: string; index: number }[][] = [];
   for (let index = 0; index < tiles.length; index += 6) {
     rows.push(tiles.slice(index, index + 6).map((tile, offset) => ({ tile, index: index + offset })));
@@ -44,7 +43,8 @@ function DiscardRiver({ seat, tiles, riichiIndices = [] }: { seat: Seat; tiles: 
   return <div className={`discard-river discard-river-${seat}`} aria-label={`${seat} discard river`}>
     {rows.map((row, rowIndex) => <div className="discard-row" key={`row-${rowIndex}`}>{row.map(({ tile, index }) => {
       const isRiichi = riichiIndices.includes(index);
-      return <span className={`discard-slot ${isRiichi ? `riichi-discard riichi-discard-${seat}` : "discard-normal"}`} key={`${tile}-${index}`}><Tile tile={tile} muted /></span>;
+      const isTsumogiri = tsumogiriIndices.includes(index);
+      return <span className={`discard-slot ${isRiichi ? `riichi-discard riichi-discard-${seat}` : "discard-normal"}`} key={`${tile}-${index}`}><Tile tile={tile} muted={isTsumogiri} /></span>;
     })}</div>)}
   </div>;
 }
@@ -94,7 +94,6 @@ function MeldArea({ seat, callerSeat, melds }: { seat: Seat; callerSeat: number;
       const extraKanTile = isKan && tiles.length > 3 ? (others.pop()?.tile ?? calledItem?.tile) : undefined;
       const displayTiles = [...others];
       if (calledItem && displayIndex !== null) displayTiles.splice(displayIndex, 0, calledItem);
-      console.debug("meld display", { visualSeat: seat, callerSeat, calledFrom: meld.called_from, calledIndex, relativeSource: meld.called_from == null ? null : (meld.called_from - callerSeat + 4) % 4, displayIndex, originalTiles: tiles, displayTiles });
       const isOpenCall = [meld.called_tile, meld.call_tile, meld.called, meld.from_seat, meld.source_seat, meld.called_from, meld.from].some((value) => value !== undefined && value !== null);
       return <span className={`meld-group meld-${meld.type ?? meld.kind ?? "open"}`} key={`meld-${meldIndex}`}>
         {displayTiles.map((item) => {
@@ -191,18 +190,17 @@ function CenterInformation({ boardState, scores, winds }: { boardState: any; sco
     </div>
   </div>;
 }
-function CenterTable({ boardState, scores, winds, rivers }: { boardState: any; scores: Record<Seat, number>; winds: Record<Seat, string>; rivers: Record<Seat, { tiles: string[]; riichiIndices: number[] }> }) {
+function CenterTable({ boardState, scores, winds, rivers }: { boardState: any; scores: Record<Seat, number>; winds: Record<Seat, string>; rivers: Record<Seat, { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }> }) {
   return <section className="center-table" aria-label="Mahjong center table">
-    <DiscardRiver seat="top" tiles={rivers.top.tiles} riichiIndices={rivers.top.riichiIndices} />
-    <DiscardRiver seat="left" tiles={rivers.left.tiles} riichiIndices={rivers.left.riichiIndices} />
+    <DiscardRiver seat="top" tiles={rivers.top.tiles} riichiIndices={rivers.top.riichiIndices} tsumogiriIndices={rivers.top.tsumogiriIndices} />
+    <DiscardRiver seat="left" tiles={rivers.left.tiles} riichiIndices={rivers.left.riichiIndices} tsumogiriIndices={rivers.left.tsumogiriIndices} />
     <CenterInformation boardState={boardState} scores={scores} winds={winds} />
-    <DiscardRiver seat="right" tiles={rivers.right.tiles} riichiIndices={rivers.right.riichiIndices} />
-    <DiscardRiver seat="bottom" tiles={rivers.bottom.tiles} riichiIndices={rivers.bottom.riichiIndices} />
+    <DiscardRiver seat="right" tiles={rivers.right.tiles} riichiIndices={rivers.right.riichiIndices} tsumogiriIndices={rivers.right.tsumogiriIndices} />
+    <DiscardRiver seat="bottom" tiles={rivers.bottom.tiles} riichiIndices={rivers.bottom.riichiIndices} tsumogiriIndices={rivers.bottom.tsumogiriIndices} />
   </section>;
 }
 function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHand, drawnTile, currentActor, currentAction, drawKey }: any) {
   const analyzed = boardState.analyzed_player ?? 0;
-  const seatForIndex = (index: number): Seat => (Object.keys(seatIndex) as Seat[]).find((seat) => seatIndex[seat] === index) ?? "bottom";
   const scores = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => ({ ...result, [seat]: score(seatIndex[seat]) }), {} as Record<Seat, number>);
   const winds = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => {
     const windNames = ["東", "南", "西", "北"];
@@ -211,8 +209,8 @@ function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHa
   }, {} as Record<Seat, string>);
   const rivers = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => {
     const player = boardState.players?.[seatIndex[seat]] ?? {};
-    return { ...result, [seat]: { tiles: pond(seatIndex[seat]), riichiIndices: player.riichi_discard_indices ?? [] } };
-  }, {} as Record<Seat, { tiles: string[]; riichiIndices: number[] }>);
+    return { ...result, [seat]: { tiles: pond(seatIndex[seat]), riichiIndices: player.riichi_discard_indices ?? [], tsumogiriIndices: player.tsumogiri_discard_indices ?? [] } };
+  }, {} as Record<Seat, { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }>);
   const shouldReveal = (playerSeat: number) => currentAction === "win"
     ? currentActor === playerSeat
     : (currentAction === "exhaustive_draw" || currentAction === "draw_end" || currentAction === "ryuukyoku")

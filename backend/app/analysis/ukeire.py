@@ -54,12 +54,10 @@ def calculate_shanten(hand: list[str], melds: list[Meld] | None = None) -> int:
     """
     melds = melds or []
     counts = _counts(hand)
-    # The library accepts the concealed portion directly; for open hands the
-    # fixed melds reduce the required number of remaining groups.
-    value = _SHANTEN.calculate_shanten(counts)
-    if melds:
-        value = min(value, max(-1, value - 2 * len(melds)))
-    return value
+    # Shanten.calculate_shanten already interprets a short concealed hand as
+    # having the remaining groups supplied by fixed melds. Subtracting for
+    # melds here would count those groups twice and can turn tenpai into agari.
+    return _SHANTEN.calculate_shanten(counts)
 
 
 def _visible_counts(state: GameState) -> Counter[str]:

@@ -123,8 +123,10 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
         except ValueError:
             return False
 
-    def append_discard(seat: int, tile: str) -> None:
+    def append_discard(seat: int, tile: str, *, tsumogiri: bool = False) -> None:
         players[seat].discards.append(tile)
+        if tsumogiri:
+            players[seat].tsumogiri_discard_indices.append(len(players[seat].discards) - 1)
         if riichi_marker_pending[seat]:
             players[seat].riichi_discard_indices.append(len(players[seat].discards) - 1)
             riichi_marker_pending[seat] = False
@@ -172,6 +174,11 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
                     players[called_from].riichi_discard_indices = [
                         marker - 1 if marker > index else marker
                         for marker in players[called_from].riichi_discard_indices
+                    ]
+                    players[called_from].tsumogiri_discard_indices = [
+                        marker - 1 if marker > index else marker
+                        for marker in players[called_from].tsumogiri_discard_indices
+                        if marker != index
                     ]
                     break
         called_tile = last_discard_event[1] if called_from is not None else None
@@ -226,7 +233,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
                 tile = last_draw[actor]
                 if tile:
                     remove_one(concealed_hands[actor], tile)
-                    append_discard(actor, tile)
+                    append_discard(actor, tile, tsumogiri=True)
                     last_discard_event = (actor, tile)
                     last_draw[actor] = None
                     emit("discard", actor, tile, item)

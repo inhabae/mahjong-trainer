@@ -25,5 +25,18 @@ def test_replay_decodes_public_calls_and_riichi() -> None:
 
     assert any(event.kind == "chi" for event in events)
     assert any(event.kind == "pon" for event in events)
-    assert any(event.kind == "kan" for event in events)
+    assert any(event.kind in {"ankan", "kakan"} for event in events)
     assert any(event.kind == "riichi" for event in events)
+
+
+def test_tsumogiri_discards_are_marked_in_public_river_state() -> None:
+    report = parse_mjai_reviewer_html(open("tests/fixtures/mjai-reviewer-demo.html", "rb").read())
+    replay = replay_round(report.rounds[0].original_game_log)
+
+    tsumogiri_events = [event for event in replay.events if event.kind == "discard" and event.raw == 60]
+    assert tsumogiri_events
+    for event_index, event in enumerate(replay.events):
+        if event.kind != "discard" or event.raw != 60:
+            continue
+        player_after_discard = replay.event_snapshots[event_index][event.seat]
+        assert len(player_after_discard.discards) - 1 in player_after_discard.tsumogiri_discard_indices

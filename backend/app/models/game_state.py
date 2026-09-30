@@ -16,6 +16,7 @@ class PlayerState(BaseModel):
     seat: int
     score: int | None = None
     discards: list[str] = Field(default_factory=list)
+    tsumogiri_discard_indices: list[int] = Field(default_factory=list)
     riichi_discard_indices: list[int] = Field(default_factory=list)
     melds: list[Meld] = Field(default_factory=list)
     riichi: bool = False

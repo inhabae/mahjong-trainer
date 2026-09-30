@@ -20,6 +20,15 @@ def test_chiitoitsu_and_kokushi_are_supported() -> None:
     assert calculate_shanten(kokushi) == 0
 
 
+def test_open_hand_melds_are_not_counted_twice() -> None:
+    tenpai_with_one_meld = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p"]
+    complete_with_one_meld = tenpai_with_one_meld + ["1p"]
+    meld = [Meld(kind="chi", tiles=["1s", "2s", "3s"])]
+
+    assert calculate_shanten(tenpai_with_one_meld, meld) == 0
+    assert calculate_shanten(complete_with_one_meld, meld) == -1
+
+
 def test_red_fives_are_five_copies() -> None:
     hand = ["1m", "2m", "3m", "4m", "0m", "6m", "7m", "8m", "9m", "1p", "1p", "2s", "3s"]
     assert calculate_shanten(hand) == 0
