@@ -239,7 +239,7 @@ async def review_uploaded_report(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=415, detail="Upload an .html mjai-reviewer report")
     try:
         reconstructed = reconstruct_report(parse_mjai_reviewer_html(await file.read()))
-        highlighted = [item for item in reconstructed.decisions if item.severity != "MATCH"]
+        highlighted = [item for item in reconstructed.decisions if item.severity in {"MISTAKE", "INACCURACY"}]
         debug = [
             f"{item.state.round_label or item.round_id} Turn {item.state.turn}\n"
             f"Player: {item.actual_action} — {((item.mortal or {}).get('player_policy') or 0) * 100:.1f}%\n"

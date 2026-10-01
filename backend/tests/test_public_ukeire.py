@@ -1,9 +1,12 @@
+from pathlib import Path
+
 from app.analysis.reconstruction import reconstruct_report
 from app.parsers.mjai_reviewer import parse_mjai_reviewer_html
 
+FIXTURE = Path(__file__).parent / "fixtures" / "mjai-reviewer-demo.html"
 
 def test_real_snapshot_reduces_ukeire_for_opponent_discard() -> None:
-    report = parse_mjai_reviewer_html(open("tests/fixtures/mjai-reviewer-demo.html", "rb").read())
+    report = parse_mjai_reviewer_html(FIXTURE.read_bytes())
     reconstructed = reconstruct_report(report)
 
     # This is East 1, analyzed-player decision 2. 1p is an effective tile
@@ -18,7 +21,7 @@ def test_real_snapshot_reduces_ukeire_for_opponent_discard() -> None:
 
 
 def test_future_public_discards_are_not_counted() -> None:
-    report = parse_mjai_reviewer_html(open("tests/fixtures/mjai-reviewer-demo.html", "rb").read())
+    report = parse_mjai_reviewer_html(FIXTURE.read_bytes())
     reconstructed = reconstruct_report(report)
     decision = reconstructed.decisions[1]
     # A later 1p in an opponent pond must not retroactively reduce this state.

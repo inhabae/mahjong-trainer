@@ -1,6 +1,6 @@
 import { MemoryRatingControls } from "../components/MemoryRatingControls";
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
-import { fetchDefaultReplay, fetchDefaultReview, fetchHealth, fetchTrainingAnnotations, fetchTrainingItems, saveTrainingAnnotation, fetchTrainingMistakes, resetTrainingProgress, saveTrainingMistake } from "../api/client";
+import { fetchDefaultReplay, fetchDefaultReview, fetchHealth, fetchTrainingAnnotations, fetchTrainingItems, fetchDueTrainingItems, saveTrainingAnnotation, fetchTrainingMistakes, resetTrainingProgress, saveTrainingMistake } from "../api/client";
 import type { MistakeHistory, MistakeRecord } from "../api/client";
 import type { ActionEvaluation, DecisionCategory, GameState, Meld, PlayerState, ReplayEvent, ReplayResponse, ReconstructedDecision, Severity } from "../types/review";
 import type { TrainingItem } from "../types/training";
@@ -358,7 +358,9 @@ interface TrainingResult {
   mortalPolicy: string | null;
 }
 
-function TrainingPanel({ memoryRating, isCall, callTile, callTileFromRiichi, callLabel, drawTile, postCallMeld, callOptions, category = "UNCLASSIFIED", result, categoryConfirmed, categorySaving, categoryError, onCategoryConfirm, onCallSelect }: { memoryRating: ReactNode; isCall: boolean; callTile: string | null; callTileFromRiichi: boolean; callLabel: string; drawTile: string | null; postCallMeld: Meld | null; callOptions: string[]; category?: DecisionCategory; result: TrainingResult | null; categoryConfirmed: boolean; categorySaving: boolean; categoryError: string | null; onCategoryConfirm: (category: Exclude<DecisionCategory, "UNCLASSIFIED">) => void; onCallSelect: (action: string) => void }) {
+function TrainingPanel({ memoryRating, isCall, callTile, callTileFromRiichi, callLabel, drawTile, postCallMeld, callOptions, category = "UNCLASSIFIED", result, categoryConfirmed, categorySaving, categoryError, dueReviewMode, onCategoryConfirm, onCallSelect }: { memoryRating: ReactNode; isCall: boolean; callTile: string | null; callTileFromRiichi: boolean; callLabel: string; drawTile: string | null; postCallMeld: Meld | null; callOptions: string[]; category?: DecisionCategory; result: TrainingResult | null; categoryConfirmed: boolean; categorySaving: boolean; categoryError: string | null; dueReviewMode: boolean; onCategoryConfirm: (category: Exclude<DecisionCategory, "UNCLASSIFIED">) => void; onCallSelect: (action: string) => void }) {
+  const [selectedCategory, setSelectedCategory] = useState<DecisionCategory>(category);
+  useEffect(() => setSelectedCategory(category), [category]);
   const severityTone = result?.severity?.toLowerCase() ?? "";
   return <aside className="training-panel" aria-live="polite">
     <header className="training-panel-header">
@@ -377,8 +379,8 @@ function TrainingPanel({ memoryRating, isCall, callTile, callTileFromRiichi, cal
         <div><span>YOU</span><b>{result.selectedAction ? <ActionWithTiles action={result.selectedAction} /> : result.selectedTile ? <Tile tile={result.selectedTile} /> : "—"}<small className={`training-move-percent severity-tone-${severityTone}`}>{result.playerPolicy ?? "—"}</small></b></div>
         <div><span>MORTAL</span><b>{result.mortalAction ? <ActionWithTiles action={result.mortalAction} /> : result.mortalTile ? <Tile tile={result.mortalTile} /> : "—"}<small className="training-move-percent training-move-percent-mortal">{result.mortalPolicy ?? "—"}</small></b></div>
       </div>
-      {!result.correct && <div className="training-category-confirm"><label htmlFor="mistake-category">Confirm or correct the assignment</label><select id="mistake-category" value={categoryOptions.some((option) => option.value === category) ? category : ""} onChange={(event) => onCategoryConfirm(event.target.value as Exclude<DecisionCategory, "UNCLASSIFIED">)}><option value="" disabled>Select a category</option>{categoryOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select>{categorySaving && <span>Saving…</span>}{categoryError && <span role="alert">{categoryError}</span>}</div>}
-      {memoryRating}
+      {!result.correct && <div className="training-category-confirm"><label htmlFor="mistake-category">Confirm or correct the assignment</label><select id="mistake-category" value={categoryOptions.some((option) => option.value === selectedCategory) ? selectedCategory : ""} onChange={(event) => setSelectedCategory(event.target.value as Exclude<DecisionCategory, "UNCLASSIFIED">)}><option value="" disabled>Select a category</option>{categoryOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select><button type="button" disabled={categorySaving || selectedCategory === "UNCLASSIFIED"} onClick={() => selectedCategory !== "UNCLASSIFIED" && onCategoryConfirm(selectedCategory)}>Confirm category</button>{categoryConfirmed && <span>Category confirmed</span>}{categorySaving && <span>Saving…</span>}{categoryError && <span role="alert">{categoryError}</span>}</div>}
+      {(result.correct || categoryConfirmed || dueReviewMode) && memoryRating}
       </>}
     </div>
   </aside>;
@@ -495,6 +497,8 @@ export function HomePage() {
   const [replayError, setReplayError] = useState<string | null>(null);
   const [replayLoading, setReplayLoading] = useState(true);
   const [viewMode, setViewMode] = useState<"training" | "replay">("training");
+  const [dueReviewMode, setDueReviewMode] = useState(false);
+  const [dueReviewError, setDueReviewError] = useState<string | null>(null);
   const [showMistakeHistory, setShowMistakeHistory] = useState(false);
   const [mistakeHistory, setMistakeHistory] = useState<MistakeHistory>(() => { try { return JSON.parse(localStorage.getItem(mistakeStorageKey) ?? '{"records":[],"stats":{"total":0,"by_severity":{},"by_category":{}}}'); } catch { return { records: [], stats: { total: 0, by_severity: {}, by_category: {} } }; } });
   const [categoryAssignments, setCategoryAssignments] = useState<Record<string, DecisionCategory>>(() => { try { return JSON.parse(localStorage.getItem(categoryStorageKey) ?? "{}"); } catch { return {}; } });
@@ -508,7 +512,7 @@ export function HomePage() {
   const decision = reportDecisions[selected];
   currentDecisionId.current = decision?.id ?? null;
   useEffect(() => {
-    if (!allReportDecisions.length) return;
+    if (!allReportDecisions.length || dueReviewMode) return;
     const at = import.meta.env.DEV && devDate ? new Date(devDate) : scheduleClock;
     if (Number.isNaN(at.getTime())) return;
     const dueNow = availableTrainingDecisions(allReportDecisions, trainingItems, sourceFile, at);
@@ -543,7 +547,7 @@ export function HomePage() {
       setSelectedCall(null);
       setSubmitted(false);
     }
-  }, [allReportDecisions, trainingItems, sourceFile, devDate, nearDueMode, nearCycleReviewed, scheduleClock]);
+  }, [allReportDecisions, trainingItems, sourceFile, devDate, nearDueMode, nearCycleReviewed, scheduleClock, dueReviewMode]);
   useEffect(() => {
     if (import.meta.env.DEV || loading || nearDueMode) return;
     const now = Date.now();
@@ -644,6 +648,38 @@ export function HomePage() {
       window.alert(err instanceof Error ? err.message : "Could not reset progress");
     }
   };
+  const enterDueReview = async () => {
+    setDueReviewError(null);
+    try {
+      const dueItems = await fetchDueTrainingItems();
+      const dueForSource = dueItems.filter((item) => item.source_game_id === sourceFile);
+      const decisionsById = new Map(allReportDecisions.map((item) => [item.id, item]));
+      const orderedDecisions = dueForSource
+        .map((item) => decisionsById.get(item.decision_id))
+        .filter((item): item is TrainingDecision => item !== undefined);
+      setTrainingItems((current) => {
+        const byItemId = new Map(current.map((item) => [item.id, item]));
+        dueForSource.forEach((item) => byItemId.set(item.id, item));
+        return [...byItemId.values()];
+      });
+      setDueReviewMode(true);
+      setReportDecisions(orderedDecisions);
+      setSelected(0);
+      setSelectedDiscard(null);
+      setSelectedCall(null);
+      setSubmitted(false);
+    } catch (err) {
+      setDueReviewError(err instanceof Error ? err.message : "Could not load due mistakes");
+    }
+  };
+  const exitDueReview = () => {
+    setDueReviewMode(false);
+    setDueReviewError(null);
+    setSelected(0);
+    setSelectedDiscard(null);
+    setSelectedCall(null);
+    setSubmitted(false);
+  };
   if (viewMode === "replay") {
     if (replayLoading) return <main className="app-shell"><section className="workspace"><h1>Full Game Replay</h1><p>Loading replay events…</p></section></main>;
     if (replayError) return <main className="app-shell"><section className="workspace"><h1>Replay unavailable</h1><p>{replayError}</p></section></main>;
@@ -653,7 +689,7 @@ export function HomePage() {
   if (showMistakeHistory) return <MistakeHistoryView history={mistakeHistory} onBack={() => setShowMistakeHistory(false)} onReset={() => void resetProgress()} />;
   if (loading) return <main className="app-shell"><section className="workspace"><p>Loading {sourceFile}…</p></section></main>;
   if (error) return <main className="app-shell"><section className="workspace"><h1>Unable to load the default report</h1><p>{error}</p></section></main>;
-  if (!decision) return <main className="app-shell"><ProductTopbar onNavigate={() => setViewMode("replay")} navigateLabel="Replay" online={status === "ok"} /><section className="workspace"><h1>{allReportDecisions.length ? "Deck finished" : "No training discrepancies"}</h1><p>{allReportDecisions.length ? "You’ve finished the deck. No more cards are due within the next 10 minutes." : `${sourceFile} contains no mistakes or inaccuracies to review.`}</p>{import.meta.env.DEV && <DevelopmentQueuePanel devDate={devDate} setDevDate={setDevDate} decisions={allReportDecisions} queue={reportDecisions} items={trainingItems} sourceFile={sourceFile} nearDueMode={nearDueMode} cycleReviewed={nearCycleReviewed} currentId={null} />}</section></main>;
+  if (!decision) return <main className="app-shell"><ProductTopbar onNavigate={() => setViewMode("replay")} navigateLabel="Replay" online={status === "ok"} /><section className="workspace"><h1>{dueReviewMode ? "No due mistakes" : allReportDecisions.length ? "Deck finished" : "No training discrepancies"}</h1><p>{dueReviewMode ? "You’ve reviewed every currently due mistake." : allReportDecisions.length ? "You’ve finished the deck. No more cards are due within the next 10 minutes." : `${sourceFile} contains no mistakes or inaccuracies to review.`}</p>{dueReviewError && <p role="alert">{dueReviewError}</p>}<button type="button" onClick={dueReviewMode ? exitDueReview : () => void enterDueReview()}>{dueReviewMode ? "Return to Training" : "Review Due Mistakes"}</button>{import.meta.env.DEV && <DevelopmentQueuePanel devDate={devDate} setDevDate={setDevDate} decisions={allReportDecisions} queue={reportDecisions} items={trainingItems} sourceFile={sourceFile} nearDueMode={nearDueMode} cycleReviewed={nearCycleReviewed} currentId={null} />}</section></main>;
   const boardState = decision.state;
   const callDecision = isCallDecision(boardState.legal_actions);
   const callOptions = boardState.legal_actions
@@ -744,11 +780,11 @@ export function HomePage() {
   return <main className="app-shell">
     <ProductTopbar onNavigate={() => setViewMode("replay")} navigateLabel="Replay" online={status === "ok"} />
     <section className="workspace trainer-workspace">
-      <div className="training-session-controls"><div><strong>Training session</strong><span>{reportDecisions.length} discrepancies in this session · Inaccuracy and Mistake</span></div><button className="mistake-history-button" onClick={() => setShowMistakeHistory(true)}>Mistake history <b>{mistakeHistory.stats.total}</b></button></div>
+      <div className="training-session-controls"><div><strong>{dueReviewMode ? "Review Due Mistakes" : "Training session"}</strong><span>{reportDecisions.length} {dueReviewMode ? "due mistakes remaining" : "discrepancies in this session · Inaccuracy and Mistake"}</span></div><div><button type="button" onClick={dueReviewMode ? exitDueReview : () => void enterDueReview()}>{dueReviewMode ? "Exit due review" : "Review Due Mistakes"}</button><button className="mistake-history-button" onClick={() => setShowMistakeHistory(true)}>Mistake history <b>{mistakeHistory.stats.total}</b></button></div></div>
       {import.meta.env.DEV && <DevelopmentQueuePanel devDate={devDate} setDevDate={setDevDate} decisions={allReportDecisions} queue={reportDecisions} items={trainingItems} sourceFile={sourceFile} nearDueMode={nearDueMode} cycleReviewed={nearCycleReviewed} currentId={decision.id} />}
       <div className="training-layout">
         <div className="training-board"><div className="table-wrap"><MahjongTable boardState={relativeBoardState} score={score} pond={pond} meldTiles={meldTiles} closedCount={closedCount} boardHand={boardHand} drawnTile={drawnTile} onTileSelect={submitted || callDecision ? undefined : submitDiscard} callTile={boardState.call_tile} callTileIsRiichi={callTileIsRiichi} callFromSeat={callFromSeat} drawKey={decision.id} /></div></div>
-        <TrainingPanel memoryRating={result ? <MemoryRatingControls key={`${sourceFile}:${decision.id}:${currentCardReps}`} item={{ source_game_id: sourceFile, decision_id: decision.id, category: categoryAssignments[decision.id] ?? decision.category, severity: decision.severity }} review={{ user_action: (selectedCall ?? selectedDiscard)!, model_action: decision.mortalAction, was_correct: result.correct }} reviewedAt={import.meta.env.DEV && devDate ? new Date(devDate).toISOString() : undefined} onRated={(saved) => { setTrainingItems((current) => [...current.filter((item) => item.id !== saved.id), saved]); if (nearDueMode) setNearCycleReviewed((current) => new Set(current).add(decision.id)); setSubmitted(false); setSelectedDiscard(null); setSelectedCall(null); }} /> : null} isCall={callDecision} callTile={boardState.call_tile} callTileFromRiichi={callTileIsRiichi} callLabel={callLabel} drawTile={drawnTile} postCallMeld={postCallMeld} callOptions={callOptions} category={categoryAssignments[decision.id] ?? decision.category} result={result} categoryConfirmed={Boolean(categoryAssignments[decision.id])} categorySaving={categorySaving} categoryError={categoryError} onCategoryConfirm={confirmCategory} onCallSelect={submitCall} />
+        <TrainingPanel memoryRating={result ? <MemoryRatingControls key={`${sourceFile}:${decision.id}:${currentCardReps}`} item={{ source_game_id: sourceFile, decision_id: decision.id, category: categoryAssignments[decision.id] ?? decision.category, severity: decision.severity }} review={{ user_action: (selectedCall ?? selectedDiscard)!, model_action: decision.mortalAction, was_correct: result.correct }} reviewedAt={import.meta.env.DEV && devDate ? new Date(devDate).toISOString() : undefined} onRated={(saved) => { setTrainingItems((current) => [...current.filter((item) => item.id !== saved.id), saved]); if (dueReviewMode) { setReportDecisions((current) => current.filter((item) => item.id !== decision.id)); setSelected(0); } else if (nearDueMode) setNearCycleReviewed((current) => new Set(current).add(decision.id)); setSubmitted(false); setSelectedDiscard(null); setSelectedCall(null); }} /> : null} isCall={callDecision} callTile={boardState.call_tile} callTileFromRiichi={callTileIsRiichi} callLabel={callLabel} drawTile={drawnTile} postCallMeld={postCallMeld} callOptions={callOptions} category={categoryAssignments[decision.id] ?? decision.category} result={result} categoryConfirmed={Boolean(categoryAssignments[decision.id]) || dueReviewMode} categorySaving={categorySaving} categoryError={categoryError} dueReviewMode={dueReviewMode} onCategoryConfirm={confirmCategory} onCallSelect={submitCall} />
       </div>
     </section>
   </main>;

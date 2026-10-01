@@ -11,7 +11,7 @@ from app.main import app
 from app.api.training import get_store
 from app.models.training import CreateTrainingItem, ReviewRequest, TrainingItem
 from app.training.scheduler import TrainingScheduler
-from app.training.store import TrainingStore
+from app.training.store import TrainingStore, timestamp
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 CREATE = dict(source_game_id="e417343c4d3491e7.html", decision_id="0:12", category="TILE_EFFICIENCY", severity="MISTAKE")
@@ -36,22 +36,21 @@ def test_creation_and_duplicate(store):
     assert item.stability is item.difficulty is item.last_rating is None
     assert item.reps == item.lapses == item.interval_days == 0
     assert create(store).id == item.id
+    assert create(store).category == "TILE_EFFICIENCY"
     assert create(store, source_game_id="other.html").id != item.id
 
 
 @pytest.mark.parametrize("rating", [1, 2, 3, 4])
-def test_first_review_matches_library_and_persists(store, rating, monkeypatch):
+def test_first_review_fsrs_memory_matches_library_and_persists(store, rating, monkeypatch):
     scheduler = TrainingScheduler(enable_fuzzing=False)
     monkeypatch.setattr("app.training.store.schedule_review", scheduler.schedule_review)
     before = create(store)
     expected, _ = Scheduler(enable_fuzzing=False).review_card(Card(card_id=before.id, due=NOW), Rating(rating), NOW)
     after = store.review(before.id, request(rating), NOW)
+    # py-fsrs is the oracle for the FSRS memory model only. The wrapper owns
+    # Anki-compatible state, learning-step, and due-date behavior.
     assert after.stability == expected.stability
     assert after.difficulty == expected.difficulty
-    assert after.due_at == expected.due
-    assert after.interval_days == (expected.due - NOW).total_seconds() / 86400
-    assert after.state == expected.state.name.lower()
-    assert after.learning_step == expected.step
     assert after.reps == 1 and after.lapses == 0
     reopened = TrainingStore(store.path)
     assert reopened.due(after.due_at)[0] == after
@@ -225,6 +224,40 @@ def test_due_order_and_boundary(store):
     after = store.review(first.id, request(4), NOW)
     assert [item.id for item in store.due(NOW)] == [second.id]
     assert [item.id for item in store.due(after.due_at)] == [second.id, first.id]
+
+
+def test_future_training_item_is_excluded_from_due_queue(store):
+    item = create(store)
+    with store.connection() as connection:
+        connection.execute("UPDATE training_items SET due_at = ? WHERE id = ?",
+                           (timestamp(NOW + timedelta(days=1)), item.id))
+    assert store.due(NOW) == []
+
+
+def test_saved_mistake_resolves_to_same_reconstructed_position_after_restart(store):
+    from app.analysis.reconstruction import reconstruct_report
+    from app.parsers.mjai_reviewer import parse_mjai_reviewer_html
+
+    fixture = Path(__file__).parent / "fixtures" / "e417343c4d3491e7.html"
+    reconstructed = reconstruct_report(parse_mjai_reviewer_html(fixture.read_bytes()))
+    decision = next(item for item in reconstructed.decisions
+                    if item.severity in {"MISTAKE", "INACCURACY"})
+    source_game_id = fixture.name
+    saved = store.create(CreateTrainingItem(source_game_id=source_game_id,
+        decision_id=f"{decision.round_id}:{decision.decision_index}",
+        category="PUSH_FOLD", severity=decision.severity), NOW)
+    assert saved.category == "PUSH_FOLD"
+    rated = store.review(saved.id, request(2, correct=False), NOW)
+
+    reopened = TrainingStore(store.path)
+    due_item = next(item for item in reopened.due(rated.due_at) if item.id == rated.id)
+    resolved = next(item for item in reconstructed.decisions
+                    if f"{item.round_id}:{item.decision_index}" == due_item.decision_id)
+    assert due_item.source_game_id == source_game_id
+    assert due_item.category == "PUSH_FOLD"
+    assert resolved.state.concealed_hand == decision.state.concealed_hand
+    assert resolved.state.round_id == decision.state.round_id
+    assert reopened.reviews(saved.id)[0].rating == 2
 
 
 def test_correctness_and_response_time_do_not_schedule(store, monkeypatch):

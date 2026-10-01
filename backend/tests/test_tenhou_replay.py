@@ -1,9 +1,12 @@
+from pathlib import Path
+
 from app.analysis.tenhou_replay import replay_round
 from app.parsers.mjai_reviewer import parse_mjai_reviewer_html
 
+FIXTURE = Path(__file__).parent / "fixtures" / "mjai-reviewer-demo.html"
 
 def test_replays_public_discards_and_dora_from_real_fixture() -> None:
-    report = parse_mjai_reviewer_html(open("tests/fixtures/mjai-reviewer-demo.html", "rb").read())
+    report = parse_mjai_reviewer_html(FIXTURE.read_bytes())
     first = replay_round(report.rounds[0].original_game_log, analyzed_player=1)
 
     assert first.dora_indicators == ["2m", "2p"]
@@ -19,7 +22,7 @@ def test_replays_public_discards_and_dora_from_real_fixture() -> None:
 
 
 def test_replay_decodes_public_calls_and_riichi() -> None:
-    report = parse_mjai_reviewer_html(open("tests/fixtures/mjai-reviewer-demo.html", "rb").read())
+    report = parse_mjai_reviewer_html(FIXTURE.read_bytes())
     replays = [replay_round(round_.original_game_log) for round_ in report.rounds]
     events = [event for replay in replays for event in replay.events]
 
@@ -30,7 +33,7 @@ def test_replay_decodes_public_calls_and_riichi() -> None:
 
 
 def test_tsumogiri_discards_are_marked_in_public_river_state() -> None:
-    report = parse_mjai_reviewer_html(open("tests/fixtures/mjai-reviewer-demo.html", "rb").read())
+    report = parse_mjai_reviewer_html(FIXTURE.read_bytes())
     replay = replay_round(report.rounds[0].original_game_log)
 
     tsumogiri_events = [event for event in replay.events if event.kind == "discard" and event.raw == 60]
