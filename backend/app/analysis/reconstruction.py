@@ -114,6 +114,8 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
                 players=replay_players,
                 dora_indicators=(public_replay.dora_indicators[:1 + sum(item.kind in {"kan", "ankan", "kakan"} for item in public_replay.events[:snapshot_index + 1])] if public_replay else []),
                 legal_actions=[item.action for item in decision.legal_actions],
+                call_tile=decision.call_tile,
+                call_from=decision.call_from,
                 raw_event_index=index,
             )
             # Only the analyzed player's own action is known from this report

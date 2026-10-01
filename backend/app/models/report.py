@@ -22,6 +22,8 @@ class Decision(BaseModel):
     raw_summary: str | None = None
     concealed_hand: list[str] = Field(default_factory=list)
     drawn_tile: str | None = None
+    call_tile: str | None = None
+    call_from: str | None = None
 
 
 class Round(BaseModel):

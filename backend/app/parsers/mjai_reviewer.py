@@ -114,18 +114,43 @@ def _parse_decision(entry: Tag) -> Decision:
         elif role_name.startswith("mortal"):
             mortal = action
 
+    is_reaction_decision = any(
+        re.match(r"^(?:pass|skip|chi|chii|pon|kan|minkan|daiminkan|ロン|チー|ポン|カン|スルー|見送る)(?:\b|\s|$)", action, re.I)
+        for action in (actual, mortal)
+        if action
+    )
+
     evaluations: list[ActionEvaluation] = []
     # Fuuro tiles are current open melds, not part of the concealed hand.
-    # Selecting every descendant `use.face` duplicated called tiles in the
-    # public hand state because the replay also exposes them as melds.
-    tile_nodes = entry.select("ul.tehai-state > li:not(.fuuro) use.face")
-    draw_node = entry.select_one("ul.tehai-state > li[before] use.face") or entry.select_one("ul.tehai-state > li.tsumo use.face")
-    if draw_node is None and len(tile_nodes) == 14:
+    # Compact reports omit closing `li` tags, so a fuuro may be nested below
+    # an ordinary hand tile in the parsed tree. Exclude by ancestor rather
+    # than requiring it to be a direct child of tehai-state.
+    tile_nodes = [
+        use for use in entry.select("ul.tehai-state use.face")
+        if use.find_parent("li", class_="fuuro") is None
+    ]
+    draw_node = entry.select_one("ul.tehai-state li[before] use.face") or entry.select_one("ul.tehai-state li.tsumo use.face")
+    call_tile = None
+    call_from = None
+    if draw_node is None and len(tile_nodes) == 14 and not is_reaction_decision:
         draw_node = tile_nodes[-1]
     hand = [use.get("href", "").removeprefix("#pai-") for use in tile_nodes if use is not draw_node]
     drawn = None
     if draw_node:
-        drawn = draw_node.get("href", "").removeprefix("#pai-")
+        tile = draw_node.get("href", "").removeprefix("#pai-")
+        source = draw_node.find_parent("li")
+        before = str(source.get("before", "")).strip() if source else ""
+        if is_reaction_decision:
+            call_tile = tile
+            call_from = before or None
+        else:
+            drawn = tile
+    elif is_reaction_decision and len(tile_nodes) == 14:
+        # Older/minified reports can hide the `before` list item from the
+        # parser's tree. A response window's trailing tile is the offered
+        # discard, not a self-draw.
+        call_tile = tile_nodes[-1].get("href", "").removeprefix("#pai-")
+        hand = [use.get("href", "").removeprefix("#pai-") for use in tile_nodes[:-1]]
     table = entry.select_one("table.data")
     if table:
         # mjai-reviewer omits optional closing tags in its compact output;
@@ -156,6 +181,8 @@ def _parse_decision(entry: Tag) -> Decision:
         raw_summary=summary_text,
         concealed_hand=hand,
         drawn_tile=drawn,
+        call_tile=call_tile,
+        call_from=call_from,
     )
 
 

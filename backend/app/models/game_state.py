@@ -40,6 +40,8 @@ class GameState(BaseModel):
     tiles_remaining: int | None = None
     concealed_hand: list[str] = Field(default_factory=list)
     drawn_tile: str | None = None
+    call_tile: str | None = None
+    call_from: str | None = None
     winning_tile: str | None = None
     winner: int | None = None
     win_type: str | None = None

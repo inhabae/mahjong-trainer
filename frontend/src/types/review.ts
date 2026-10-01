@@ -35,6 +35,8 @@ export interface GameState {
   tiles_remaining: number | null;
   concealed_hand: string[];
   drawn_tile: string | null;
+  call_tile: string | null;
+  call_from: string | null;
   winning_tile: string | null;
   winner: number | null;
   win_type: string | null;
