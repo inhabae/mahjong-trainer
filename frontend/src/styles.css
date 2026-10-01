@@ -225,6 +225,8 @@
 .training-question-tile > span { color: #777268; font-size: 15px; font-weight: 400; }
 .training-question-tile b { display: flex; align-items: center; gap: 7px; color: #303a33; font-size: 13px; }
 .training-question-tile .mahjong-tile { --tile-width: 32px; --tile-height: 45px; }
+.training-question-tile .training-riichi-call-tile { width: 45px; height: 32px; justify-content: center; }
+.training-question-tile .training-riichi-call-tile .mahjong-tile { transform: rotate(-90deg); transform-origin: center; }
 .training-question-meld { --hand-tile-width: 32px; --hand-tile-height: 45px; --tile-width: 32px; --tile-height: 45px; --tile-gap: 2px; --meld-group-gap: 4px; display: flex; align-items: center; }
 .training-call-choice { padding: 8px 10px; border: 1px solid #cfc7b9; background: transparent; color: #303a33; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
 .training-call-choice:hover { border-color: #39745b; color: #285d48; }

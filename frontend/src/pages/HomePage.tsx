@@ -1,8 +1,8 @@
 import { Component, useEffect, useState } from "react";
 import { fetchDefaultReplay, fetchDefaultReview, fetchHealth } from "../api/client";
-import type { ActionEvaluation, GameState, Meld, PlayerState, ReplayEvent, ReplayResponse, ReconstructedDecision, Severity } from "../types/review";
+import type { ActionEvaluation, DecisionCategory, GameState, Meld, PlayerState, ReplayEvent, ReplayResponse, ReconstructedDecision, Severity } from "../types/review";
 
-type TrainingDecision = { id: string; actualAction: string | null; mortalAction: string | null; severity: Severity; mortalPolicy: number | null; actions: ActionEvaluation[]; state: GameState };
+type TrainingDecision = { id: string; actualAction: string | null; mortalAction: string | null; severity: Severity; category: DecisionCategory; mortalPolicy: number | null; actions: ActionEvaluation[]; state: GameState };
 interface DiscardRiverState { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }
 interface MahjongTableProps {
   boardState: GameState;
@@ -13,6 +13,9 @@ interface MahjongTableProps {
   boardHand: string[];
   drawnTile?: string | null;
   onTileSelect?: (tile: string) => void;
+  callTile?: string | null;
+  callTileIsRiichi?: boolean;
+  callFromSeat?: number | null;
   currentActor?: number;
   currentAction?: string;
   drawKey: string | number;
@@ -86,6 +89,7 @@ function toTrainingDecision(item: ReconstructedDecision): TrainingDecision {
     actualAction: item.actual_action,
     mortalAction: item.mortal_action,
     severity: item.severity,
+    category: item.category ?? "UNCLASSIFIED",
     mortalPolicy: item.mortal.best_policy,
     actions: item.actions,
     state: item.state,
@@ -276,7 +280,7 @@ function CenterTable({ boardState, scores, winds, rivers }: { boardState: GameSt
     <DiscardRiver seat="bottom" tiles={rivers.bottom.tiles} riichiIndices={rivers.bottom.riichiIndices} tsumogiriIndices={rivers.bottom.tsumogiriIndices} />
   </section>;
 }
-function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHand, drawnTile, onTileSelect, currentActor, currentAction, drawKey }: MahjongTableProps) {
+function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHand, drawnTile, onTileSelect, callTile, callTileIsRiichi, callFromSeat, currentActor, currentAction, drawKey }: MahjongTableProps) {
   const analyzed = boardState.analyzed_player;
   const scores = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => ({ ...result, [seat]: score(seatIndex[seat]) }), {} as Record<Seat, number | null>);
   const winds = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => {
@@ -285,8 +289,15 @@ function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHa
     return { ...result, [seat]: windNames[(seatIndex[seat] - dealer + 4) % 4] };
   }, {} as Record<Seat, string>);
   const rivers = (Object.keys(seatIndex) as Seat[]).reduce((result, seat) => {
-    const player = boardState.players[seatIndex[seat]];
-    return { ...result, [seat]: { tiles: pond(seatIndex[seat]), riichiIndices: player?.riichi_discard_indices ?? [], tsumogiriIndices: player?.tsumogiri_discard_indices ?? [] } };
+    const playerSeat = seatIndex[seat];
+    const player = boardState.players[playerSeat];
+    const tiles = pond(playerSeat);
+    const riichiIndices = [...(player?.riichi_discard_indices ?? [])];
+    if (callTileIsRiichi && callFromSeat === playerSeat && callTile) {
+      const offeredTileIndex = tiles.map(normalizeTile).lastIndexOf(normalizeTile(callTile));
+      if (offeredTileIndex >= 0 && !riichiIndices.includes(offeredTileIndex)) riichiIndices.push(offeredTileIndex);
+    }
+    return { ...result, [seat]: { tiles, riichiIndices, tsumogiriIndices: player?.tsumogiri_discard_indices ?? [] } };
   }, {} as Record<Seat, { tiles: string[]; riichiIndices: number[]; tsumogiriIndices: number[] }>);
   const shouldReveal = (playerSeat: number) => currentAction === "win"
     ? currentActor === playerSeat
@@ -316,16 +327,16 @@ interface TrainingResult {
   playerPolicy: string | null;
 }
 
-function TrainingPanel({ decisionNumber, total, isCall, callTile, callLabel, drawTile, postCallMeld, callOptions, result, canNext, onCallSelect, onNext, onSkip }: { decisionNumber: number; total: number; isCall: boolean; callTile: string | null; callLabel: string; drawTile: string | null; postCallMeld: Meld | null; callOptions: string[]; result: TrainingResult | null; canNext: boolean; onCallSelect: (action: string) => void; onNext: () => void; onSkip: () => void }) {
+function TrainingPanel({ decisionNumber, total, isCall, callTile, callTileFromRiichi, callLabel, drawTile, postCallMeld, callOptions, category = "UNCLASSIFIED", result, canNext, onCallSelect, onNext, onSkip }: { decisionNumber: number; total: number; isCall: boolean; callTile: string | null; callTileFromRiichi: boolean; callLabel: string; drawTile: string | null; postCallMeld: Meld | null; callOptions: string[]; category?: DecisionCategory; result: TrainingResult | null; canNext: boolean; onCallSelect: (action: string) => void; onNext: () => void; onSkip: () => void }) {
   return <aside className="training-panel" aria-live="polite">
     <header className="training-panel-header">
       <div className="training-panel-head"><span className="eyebrow">TRAINING</span><span className="training-decision-index">{String(decisionNumber).padStart(2, "0")} / {total}</span></div>
-      {result && <div className="training-category"><span>TILE EFFICIENCY</span><strong>牌効率</strong></div>}
+      {result && <div className="training-category"><span>{category.replaceAll("_", " ")}</span>{category === "TILE_EFFICIENCY" && <strong>牌効率</strong>}</div>}
     </header>
     <div className="training-panel-body">
       {!result ? <>
         <div className="training-question">
-          {(isCall || drawTile || postCallMeld) && <div className="training-question-tile"><span>{isCall ? callLabel : postCallMeld ? calledMeldLabel(postCallMeld.kind) : "Your draw"}</span>{isCall && callTile ? <b><Tile tile={callTile} /></b> : drawTile ? <b><Tile tile={drawTile} /></b> : postCallMeld && <div className="training-question-meld"><MeldArea seat="bottom" callerSeat={0} melds={[postCallMeld]} /></div>}</div>}
+          {(isCall || drawTile || postCallMeld) && <div className="training-question-tile"><span>{isCall ? callLabel : postCallMeld ? calledMeldLabel(postCallMeld.kind) : "Your draw"}</span>{isCall && callTile ? <b className={callTileFromRiichi ? "training-riichi-call-tile" : undefined}><Tile tile={callTile} /></b> : drawTile ? <b><Tile tile={drawTile} /></b> : postCallMeld && <div className="training-question-meld"><MeldArea seat="bottom" callerSeat={0} melds={[postCallMeld]} /></div>}</div>}
           {isCall ? <><span className="training-select-hint">Call or pass?</span>{callOptions.map((action) => <button type="button" className="training-call-choice" key={action} onClick={() => onCallSelect(action)}><ActionWithTiles action={action} /></button>)}</> : <span className="training-select-hint">Choose a discard.</span>}
         </div>
         <button type="button" className="training-skip" disabled={!canNext} onClick={onSkip}>Skip question →</button>
@@ -487,12 +498,21 @@ export function HomePage() {
     ? playerMelds[playerMelds.length - 1]!
     : null;
   const callFromSeat = callDecision ? relativeCallSeat(boardState.call_from) : null;
+  const callTileIsRiichi = callDecision && boardState.call_tile_is_riichi;
   const callLabel = callFromSeat === 3 ? "Kamicha's discard" : callFromSeat === 2 ? "Toimen's discard" : callFromSeat === 1 ? "Shimocha's discard" : "Opponent discard";
   const score = (seat: number) => boardPlayers[seat]!.score;
   const pond = (seat: number) => {
     const discards = boardPlayers[seat]!.discards;
     if (!callDecision || callFromSeat !== seat || !boardState.call_tile) return discards;
-    return sameTile(discards[discards.length - 1] ?? null, boardState.call_tile) ? discards : [...discards, boardState.call_tile];
+    const riichiIndices = boardPlayers[seat]!.riichi_discard_indices;
+    const offeredRiichiTileIsPresent = discards.some((tile, index) =>
+      sameTile(tile, boardState.call_tile) && riichiIndices.includes(index));
+    // The replay snapshot can already contain this offered discard without it
+    // being the final river tile. Avoid appending a duplicate, which loses its
+    // riichi-discard index and renders the duplicate vertically.
+    return sameTile(discards[discards.length - 1] ?? null, boardState.call_tile) || offeredRiichiTileIsPresent
+      ? discards
+      : [...discards, boardState.call_tile];
   };
   // Preserve the aka/red-five suffix when extracting a tile from review text.
   // Without the optional `r`, 5mr was normalized to 5m and lost its Dora art.
@@ -543,8 +563,8 @@ export function HomePage() {
     <ProductTopbar onNavigate={() => setViewMode("replay")} navigateLabel="Replay" online={status === "ok"} />
     <section className="workspace trainer-workspace">
       <div className="training-layout">
-        <div className="training-board"><div className="table-wrap"><MahjongTable boardState={relativeBoardState} score={score} pond={pond} meldTiles={meldTiles} closedCount={closedCount} boardHand={boardHand} drawnTile={drawnTile} onTileSelect={submitted || callDecision ? undefined : submitDiscard} drawKey={decision.id} /></div></div>
-        <TrainingPanel decisionNumber={decisionNumber} total={reportDecisions.length} isCall={callDecision} callTile={boardState.call_tile} callLabel={callLabel} drawTile={drawnTile} postCallMeld={postCallMeld} callOptions={callOptions} result={result} canNext={selected + 1 < reportDecisions.length} onCallSelect={submitCall} onNext={nextProblem} onSkip={nextProblem} />
+        <div className="training-board"><div className="table-wrap"><MahjongTable boardState={relativeBoardState} score={score} pond={pond} meldTiles={meldTiles} closedCount={closedCount} boardHand={boardHand} drawnTile={drawnTile} onTileSelect={submitted || callDecision ? undefined : submitDiscard} callTile={boardState.call_tile} callTileIsRiichi={callTileIsRiichi} callFromSeat={callFromSeat} drawKey={decision.id} /></div></div>
+        <TrainingPanel decisionNumber={decisionNumber} total={reportDecisions.length} isCall={callDecision} callTile={boardState.call_tile} callTileFromRiichi={callTileIsRiichi} callLabel={callLabel} drawTile={drawnTile} postCallMeld={postCallMeld} callOptions={callOptions} category={decision.category} result={result} canNext={selected + 1 < reportDecisions.length} onCallSelect={submitCall} onNext={nextProblem} onSkip={nextProblem} />
       </div>
     </section>
   </main>;

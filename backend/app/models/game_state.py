@@ -41,6 +41,7 @@ class GameState(BaseModel):
     concealed_hand: list[str] = Field(default_factory=list)
     drawn_tile: str | None = None
     call_tile: str | None = None
+    call_tile_is_riichi: bool = False
     call_from: str | None = None
     winning_tile: str | None = None
     winner: int | None = None
@@ -61,6 +62,9 @@ class ReconstructedDecision(BaseModel):
     severity: str | None = None
     mortal: dict | None = None
     actions: list[dict] = Field(default_factory=list)
+    category: str = "UNCLASSIFIED"
+    threatening_seats: list[int] = Field(default_factory=list)
+    discard_safety: list[dict] = Field(default_factory=list)
 
 class ReplayStep(BaseModel):
     round_id: str

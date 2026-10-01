@@ -24,7 +24,7 @@ def normalize_tile(tile: str) -> str:
 def action_tile(action: str | None) -> str | None:
     if not action:
         return None
-    matches = re.findall(r"(?:[0-9][mps]r?|[neswpfch])", action.lower())
+    matches = re.findall(r"(?:[0-9][mps]r?|[1-7]z|[neswpfch])", action.lower())
     for match in reversed(matches):
         candidate = normalize_tile(match.replace(" ", ""))
         if candidate in TILE_INDEX:

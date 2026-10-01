@@ -1,4 +1,12 @@
 export type Severity = "MATCH" | "MINOR" | "INACCURACY" | "MISTAKE";
+export type DecisionCategory = "CALL_DECISION" | "RIICHI_DECISION" | "PUSH_FOLD" | "BETAORI" | "TILE_EFFICIENCY" | "ENDGAME_PLACEMENT" | "UNCLASSIFIED";
+
+export interface DiscardSafety {
+  tile: string;
+  rank: number;
+  label: string;
+  guaranteed: boolean;
+}
 
 export interface Meld {
   kind: string;
@@ -36,6 +44,7 @@ export interface GameState {
   concealed_hand: string[];
   drawn_tile: string | null;
   call_tile: string | null;
+  call_tile_is_riichi: boolean;
   call_from: string | null;
   winning_tile: string | null;
   winner: number | null;
@@ -104,6 +113,9 @@ export interface ReconstructedDecision {
   severity: Severity;
   mortal: PolicySummary;
   actions: ActionEvaluation[];
+  category: DecisionCategory;
+  threatening_seats: number[];
+  discard_safety: DiscardSafety[];
 }
 
 export interface ReviewResponse {
