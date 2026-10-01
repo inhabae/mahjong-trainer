@@ -1,6 +1,7 @@
 import type { ReviewLog, TrainingItem, TrainingItemInput, TrainingReviewInput } from "../types/training";
 import type { HealthResponse } from "../types/health";
 import type { ReplayResponse, ReviewResponse } from "../types/review";
+import type { ReconstructedDecision } from "../types/review";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
 
@@ -104,6 +105,20 @@ export async function fetchDueTrainingItems(at?: string): Promise<TrainingItem[]
   const response = await fetch(`${API_BASE}/training-items/due${query}`);
   if (!response.ok) throw new Error(`Due items failed (${response.status})`);
   return response.json() as Promise<TrainingItem[]>;
+}
+
+export async function fetchTrainingSourceDecisions(sourceGameId: string): Promise<ReconstructedDecision[]> {
+  const response = await fetch(`${API_BASE}/training-sources/${encodeURIComponent(sourceGameId)}/decisions`);
+  if (!response.ok) {
+    let detail = `Source game lookup failed (${response.status})`;
+    try {
+      const body = await response.json() as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch { /* Keep the status-based message when the response is not JSON. */ }
+    throw new Error(detail);
+  }
+  const value = await response.json() as { decisions: ReconstructedDecision[] };
+  return value.decisions;
 }
 
 export async function fetchTrainingItems(sourceGameId: string): Promise<TrainingItem[]> {

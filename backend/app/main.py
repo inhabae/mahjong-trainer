@@ -1,16 +1,18 @@
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+from functools import lru_cache
 import json
 import gzip
 from threading import Lock
 
 from pydantic import BaseModel
-from app.api.training import router as training_router
+from app.api.training import get_store, router as training_router
 
 from app.parsers.mjai_reviewer import MalformedReportError, UnsupportedReportError, parse_mjai_reviewer_html
 from app.analysis.reconstruction import reconstruct_report
 from app.analysis.ukeire import analyze_discard, calculate_effective_tiles, calculate_shanten, normalize_tile
+from app.training.source_identity import decision_id, source_game_id
 
 app = FastAPI(title="Riichi Mahjong Trainer API", version="0.1.0")
 app.include_router(training_router)
@@ -127,9 +129,19 @@ async def default_report() -> dict:
     """Serve the precomputed default report; rebuild it with the parse script."""
     try:
         with gzip.open(DEFAULT_REPORT_CACHE, "rt", encoding="utf-8") as cache:
-            return json.load(cache)
+            report = json.load(cache)
+        game_id = _default_source_game_id()
+        get_store().register_source(game_id, DEFAULT_REPORT.name, report["decisions"])
+        report["source_game_id"] = game_id
+        return report
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=503, detail="Default report cache is missing or invalid; run `python -m scripts.rebuild_default_report` from backend/") from exc
+
+
+@lru_cache(maxsize=1)
+def _default_source_game_id() -> str:
+    parsed = parse_mjai_reviewer_html(DEFAULT_REPORT.read_bytes())
+    return source_game_id(parsed)
 
 
 @app.get("/api/reports/default/replay")
@@ -144,11 +156,14 @@ async def default_full_replay() -> dict:
 
 def build_default_cache() -> tuple[dict, dict]:
     """Parse the default HTML report and build the JSON served by normal requests."""
-    reconstructed = reconstruct_report(parse_mjai_reviewer_html(DEFAULT_REPORT.read_bytes()))
+    parsed = parse_mjai_reviewer_html(DEFAULT_REPORT.read_bytes())
+    reconstructed = reconstruct_report(parsed)
+    game_id = source_game_id(parsed)
     report = {"source_file": DEFAULT_REPORT.name,
+              "source_game_id": game_id,
               "analyzed_player": reconstructed.analyzed_player, "summary": reconstructed.summary,
               "warnings": reconstructed.warnings,
-              "decisions": [{**item.model_dump(), "id": f"{item.round_id}:{item.decision_index}"}
+              "decisions": [{**item.model_dump(), "id": decision_id(item.round_id, item.decision_index)}
                             for item in reconstructed.decisions]}
     events = []
     last_player_analysis = None
@@ -238,7 +253,12 @@ async def review_uploaded_report(file: UploadFile = File(...)) -> dict:
     if not file.filename or not file.filename.lower().endswith(".html"):
         raise HTTPException(status_code=415, detail="Upload an .html mjai-reviewer report")
     try:
-        reconstructed = reconstruct_report(parse_mjai_reviewer_html(await file.read()))
+        parsed = parse_mjai_reviewer_html(await file.read())
+        reconstructed = reconstruct_report(parsed)
+        game_id = source_game_id(parsed)
+        decisions = [{**item.model_dump(), "id": decision_id(item.round_id, item.decision_index)}
+                     for item in reconstructed.decisions]
+        get_store().register_source(game_id, file.filename, decisions)
         highlighted = [item for item in reconstructed.decisions if item.severity in {"MISTAKE", "INACCURACY"}]
         debug = [
             f"{item.state.round_label or item.round_id} Turn {item.state.turn}\n"
@@ -247,10 +267,24 @@ async def review_uploaded_report(file: UploadFile = File(...)) -> dict:
             f"Severity: {item.severity}"
             for item in reconstructed.decisions if item.severity != "MATCH"
         ]
-        return {"analyzed_player": reconstructed.analyzed_player, "summary": reconstructed.summary,
-                "warnings": reconstructed.warnings, "decisions": [item.model_dump() for item in highlighted],
+        return {"source_file": file.filename, "source_game_id": game_id,
+                "analyzed_player": reconstructed.analyzed_player, "summary": reconstructed.summary,
+                "warnings": reconstructed.warnings,
+                "decisions": [{**item.model_dump(), "id": decision_id(item.round_id, item.decision_index)}
+                              for item in highlighted],
                 "debug": debug}
     except UnsupportedReportError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
     except (MalformedReportError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/training-sources/{source_id}/decisions")
+def training_source_decisions(source_id: str) -> dict:
+    decisions = get_store().source_decisions(source_id)
+    if decisions is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Source game '{source_id}' is unavailable. Re-upload the original game report to restore its review positions.",
+        )
+    return {"source_game_id": source_id, "decisions": decisions}

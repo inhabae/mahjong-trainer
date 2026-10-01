@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sqlite3
 
@@ -19,6 +20,9 @@ CREATE TABLE IF NOT EXISTS training_items (
  UNIQUE(source_game_id, decision_id)
 );
 CREATE INDEX IF NOT EXISTS training_items_due ON training_items(due_at, id);
+CREATE TABLE IF NOT EXISTS training_sources (
+ source_game_id TEXT PRIMARY KEY, source_filename TEXT NOT NULL, decisions_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS review_logs (
  id INTEGER PRIMARY KEY, training_item_id INTEGER NOT NULL REFERENCES training_items(id),
  reviewed_at TEXT NOT NULL, rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 4),
@@ -91,6 +95,31 @@ class TrainingStore:
         with self.connection() as connection:
             return [TrainingItem.model_validate(dict(row)) for row in connection.execute(
                 "SELECT * FROM training_items WHERE source_game_id = ? ORDER BY id", (source_game_id,))]
+
+    def register_source(self, source_game_id: str, source_filename: str,
+                        decisions: list[dict]) -> None:
+        """Persist reconstructed positions and migrate filename-keyed items."""
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO training_sources (source_game_id, source_filename, decisions_json) "
+                "VALUES (?, ?, ?) ON CONFLICT(source_game_id) DO UPDATE SET "
+                "source_filename = excluded.source_filename, decisions_json = excluded.decisions_json",
+                (source_game_id, source_filename, json.dumps(decisions, separators=(",", ":"))),
+            )
+            # Older app versions keyed items by filename. Move those rows to
+            # the durable ID when there is no canonical row for that decision.
+            connection.execute(
+                "UPDATE OR IGNORE training_items SET source_game_id = ? WHERE source_game_id = ?",
+                (source_game_id, source_filename),
+            )
+
+    def source_decisions(self, source_game_id: str) -> list[dict] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT decisions_json FROM training_sources WHERE source_game_id = ?",
+                (source_game_id,),
+            ).fetchone()
+            return json.loads(row["decisions_json"]) if row else None
 
     def reset_progress(self) -> None:
         """Reset scheduling state for every card, preserving immutable review logs."""

@@ -9,8 +9,9 @@ const ratings: { rating: MemoryRating; label: string; description: string }[] = 
   { rating: 4, label: "Easy", description: "Very easy recall" },
 ];
 
-function formatInterval(dueAt: string): string {
-  const minutes = Math.max(1, Math.round((new Date(dueAt).getTime() - Date.now()) / 60_000));
+function formatInterval(dueAt: string, referenceAt?: string): string {
+  const referenceTime = referenceAt ? new Date(referenceAt).getTime() : Date.now();
+  const minutes = Math.max(1, Math.round((new Date(dueAt).getTime() - referenceTime) / 60_000));
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.ceil(minutes / 60);
   if (hours < 24) return `${hours}h`;
@@ -75,7 +76,7 @@ export function MemoryRatingControls({ item, review, onRated, reviewedAt }: {
     <div className="memory-rating-buttons">{ratings.map(({ rating, label, description }) =>
       <button key={rating} title={`${description} · shortcut ${rating}`} disabled={saving || saved !== null}
         aria-pressed={saved?.last_rating === rating} onClick={() => void rate(rating)}>
-        <span className="memory-rating-interval">{saved?.last_rating === rating ? formatInterval(saved.due_at) : preview ? formatInterval(preview[rating]) : previewError ? "—" : "…"}</span>
+        <span className="memory-rating-interval">{saved?.last_rating === rating ? formatInterval(saved.due_at, reviewedAt) : preview ? formatInterval(preview[rating], reviewedAt) : previewError ? "—" : "…"}</span>
         <span>{label}</span>
       </button>
     )}</div>

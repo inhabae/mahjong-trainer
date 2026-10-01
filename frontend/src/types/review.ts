@@ -120,6 +120,7 @@ export interface ReconstructedDecision {
 
 export interface ReviewResponse {
   source_file: string;
+  source_game_id?: string;
   analyzed_player: number;
   summary: Record<string, number>;
   warnings: string[];
