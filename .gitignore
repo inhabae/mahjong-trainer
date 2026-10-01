@@ -34,3 +34,8 @@ frontend/.vite/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
+
+# Local training progress and spaced repetition database
+backend/*.sqlite3*
+backend/training_annotations.json
+backend/training_mistakes.json

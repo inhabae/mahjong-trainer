@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Backend API for a personalized Riichi Mahjong training app"
 requires-python = ">=3.12"
 dependencies = [
+    "fsrs==6.3.2",
     "fastapi>=0.115,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
     "beautifulsoup4>=4.12,<5.0",
