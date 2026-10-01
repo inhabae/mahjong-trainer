@@ -65,6 +65,126 @@ def test_first_review_matches_library_and_persists(store, rating, monkeypatch):
     assert after.last_rating == rating
 
 
+def test_anki_default_scheduler_configuration():
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    assert scheduler._scheduler.desired_retention == 0.90
+    assert scheduler._scheduler.parameters == Scheduler(enable_fuzzing=False).parameters
+    assert scheduler._scheduler.learning_steps == (timedelta(minutes=1), timedelta(minutes=10))
+    assert scheduler._scheduler.relearning_steps == (timedelta(minutes=10),)
+    assert scheduler._scheduler.maximum_interval == 36_500
+
+
+@pytest.mark.parametrize("rating, expected_state, expected_step, expected_seconds", [
+    (1, "learning", 0, 60),
+    (2, "learning", 0, 330),
+    (3, "learning", 1, 600),
+    (4, "review", None, 8 * 86_400),
+])
+def test_new_card_default_button_transitions(store, rating, expected_state, expected_step, expected_seconds):
+    item = create(store)
+    result = TrainingScheduler(enable_fuzzing=False).schedule_review(item, rating, NOW)
+    assert result.state == expected_state
+    assert result.learning_step == expected_step
+    assert result.due_at == NOW + timedelta(seconds=expected_seconds)
+
+
+def test_new_card_good_then_good_graduates(store):
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    item = create(store)
+    first = scheduler.schedule_review(item, 3, NOW)
+    assert first.state == "learning" and first.learning_step == 1
+    learning = item.model_copy(update={
+        "state": first.state, "learning_step": first.learning_step,
+        "due_at": first.due_at, "stability": first.stability,
+        "difficulty": first.difficulty, "last_reviewed_at": NOW,
+        "interval_days": first.interval_days,
+    })
+    second = scheduler.schedule_review(learning, 3, first.due_at)
+    assert second.state == "review" and second.learning_step is None
+    assert second.due_at == first.due_at + timedelta(days=2)
+
+
+def test_review_again_enters_relearning_then_good_graduates(store):
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    item = create(store)
+    good = scheduler.schedule_review(item, 3, NOW)
+    learning = item.model_copy(update={"state": good.state, "learning_step": good.learning_step,
+        "due_at": good.due_at, "stability": good.stability, "difficulty": good.difficulty,
+        "last_reviewed_at": NOW, "interval_days": good.interval_days})
+    graduated = scheduler.schedule_review(learning, 3, good.due_at)
+    review = learning.model_copy(update={"state": graduated.state, "learning_step": None,
+        "due_at": graduated.due_at, "stability": graduated.stability,
+        "difficulty": graduated.difficulty, "last_reviewed_at": good.due_at,
+        "interval_days": graduated.interval_days})
+    lapse = scheduler.schedule_review(review, 1, graduated.due_at)
+    assert lapse.state == "relearning" and lapse.learning_step == 0
+    assert lapse.due_at == graduated.due_at + timedelta(minutes=10)
+    assert lapse.lapse_increment == 1
+    relearning = review.model_copy(update={"state": lapse.state, "learning_step": lapse.learning_step,
+        "due_at": lapse.due_at, "stability": lapse.stability, "difficulty": lapse.difficulty,
+        "last_reviewed_at": graduated.due_at, "interval_days": lapse.interval_days})
+    recovered = scheduler.schedule_review(relearning, 3, lapse.due_at)
+    assert recovered.state == "review" and recovered.learning_step is None
+
+
+@pytest.mark.parametrize("rating, expected_state", [(1, "relearning"), (2, "relearning"),
+                                                       (3, "review"), (4, "review")])
+def test_relearning_default_button_transitions(store, rating, expected_state):
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    item = create(store).model_copy(update={"state": "relearning", "learning_step": 0,
+        "stability": 2.0, "difficulty": 5.0, "interval_days": 2.0,
+        "last_reviewed_at": NOW - timedelta(days=2)})
+    result = scheduler.schedule_review(item, rating, NOW)
+    assert result.state == expected_state
+    if expected_state == "relearning":
+        assert result.learning_step == 0
+        assert result.due_at == NOW + timedelta(minutes=10)
+    else:
+        assert result.learning_step is None
+
+
+def test_multiple_consecutive_review_schedules(store):
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    item = create(store).model_copy(update={"state": "review", "stability": 10.0,
+        "difficulty": 5.0, "interval_days": 10.0,
+        "last_reviewed_at": NOW - timedelta(days=10)})
+    for rating in (2, 3, 4, 3, 2):
+        result = scheduler.schedule_review(item, rating, item.due_at)
+        assert result.state == "review"
+        item = item.model_copy(update={"due_at": result.due_at,
+            "interval_days": result.interval_days, "stability": result.stability,
+            "difficulty": result.difficulty, "last_reviewed_at": item.due_at})
+
+
+@pytest.mark.parametrize("rating", [2, 3, 4])
+def test_review_card_hard_good_easy_use_fsrs_and_order(store, rating):
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    item = create(store)
+    first = scheduler.schedule_review(item, 3, NOW)
+    learn = item.model_copy(update={"state": first.state, "learning_step": first.learning_step,
+        "due_at": first.due_at, "stability": first.stability, "difficulty": first.difficulty,
+        "last_reviewed_at": NOW, "interval_days": first.interval_days})
+    second = scheduler.schedule_review(learn, 3, first.due_at)
+    review = learn.model_copy(update={"state": second.state, "learning_step": None,
+        "due_at": second.due_at, "stability": second.stability, "difficulty": second.difficulty,
+        "last_reviewed_at": first.due_at, "interval_days": second.interval_days})
+    results = scheduler.preview(review, second.due_at)
+    assert results[2].state == results[3].state == results[4].state == "review"
+    assert results[2].interval_days < results[3].interval_days < results[4].interval_days
+    assert scheduler.schedule_review(review, rating, second.due_at) == results[rating]
+
+
+def test_maximum_interval_and_fuzz_disabled_are_deterministic(store):
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    item = create(store).model_copy(update={"state": "review", "stability": 1_000_000.0,
+        "difficulty": 5.0, "interval_days": 36_500, "learning_step": None,
+        "last_reviewed_at": NOW - timedelta(days=36_500)})
+    first = scheduler.schedule_review(item, 4, NOW)
+    second = scheduler.schedule_review(item, 4, NOW)
+    assert first.interval_days == second.interval_days == 36_500
+    assert first.due_at == second.due_at
+
+
 def test_lapses_and_learning_steps(store):
     item = create(store)
     item = store.review(item.id, request(3), NOW)
