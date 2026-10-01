@@ -24,7 +24,7 @@ function normalizeTile(tile: string) {
   return honorCodes[tile] ?? tile;
 }
 function actionTile(action: string | null): string | null {
-  return action?.match(/([0-9][mps]r?|[1-7]z|[東南西北中發白]|[epwsfc])/u)?.[1] ?? null;
+  return action?.match(/([0-9][mps]r?|[1-7]z|[東南西北中發白]|[epwsfcn])/u)?.[1] ?? null;
 }
 function sameTile(left: string | null, right: string | null): boolean {
   return left !== null && right !== null && normalizeTile(left) === normalizeTile(right);
