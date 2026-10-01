@@ -215,19 +215,21 @@
 .training-category { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0 12px; }
 .training-category > span { color: #655e54; font-size: 12px; font-weight: 650; letter-spacing: .04em; }
 .training-category > strong { color: #285d48; font: 600 19px "Helvetica Neue", Helvetica, Arial, sans-serif; }
-.training-panel-body { padding-top: 12px; }
-.training-select-hint { color: #777268; font-size: 13px; font-weight: 500; }
-.training-skip { display: block; margin: 10px 0 0 auto; padding: 4px 0 4px 10px; border: 0; background: transparent; color: #777268; font: inherit; font-size: 12px; cursor: pointer; }
+.training-panel-body { padding-top: 22px; }
+.training-select-hint { color: #777268; font-size: 15px; font-weight: 600; }
+.training-skip { display: block; margin: 20px 0 0 auto; padding: 4px 0 4px 10px; border: 0; background: transparent; color: #777268; font: inherit; font-size: 12px; cursor: pointer; }
 .training-skip:hover:not(:disabled) { color: #285d48; }
 .training-skip:disabled { color: #a39a8f; cursor: default; }
-.training-call-prompt { display: grid; gap: 7px; }
-.training-call-prompt > span { margin-bottom: 3px; color: #777268; font-size: 13px; }
-.training-offered-discard { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid #d5d0c4; }
-.training-offered-discard > span { color: #777268; font-size: 11px; }
-.training-offered-discard b { display: flex; align-items: center; gap: 7px; color: #303a33; font-size: 13px; }
-.training-offered-discard .mahjong-tile { --tile-width: 24px; --tile-height: 34px; }
+.training-question { display: grid; gap: 17px; }
+.training-question-tile { display: flex; align-items: center; justify-content: space-between; min-height: 45px; }
+.training-question-tile > span { color: #777268; font-size: 15px; font-weight: 400; }
+.training-question-tile b { display: flex; align-items: center; gap: 7px; color: #303a33; font-size: 13px; }
+.training-question-tile .mahjong-tile { --tile-width: 32px; --tile-height: 45px; }
+.training-question-meld { --hand-tile-width: 32px; --hand-tile-height: 45px; --tile-width: 32px; --tile-height: 45px; --tile-gap: 2px; --meld-group-gap: 4px; display: flex; align-items: center; }
 .training-call-choice { padding: 8px 10px; border: 1px solid #cfc7b9; background: transparent; color: #303a33; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
 .training-call-choice:hover { border-color: #39745b; color: #285d48; }
+.training-action-label { display: flex; align-items: center; gap: 6px; }
+.training-call-choice .training-action-label .mahjong-tile { --tile-width: 22px; --tile-height: 31px; }
 .training-verdict { display: flex; align-items: center; margin: 13px 0 3px; color: #a43b35; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
 .training-verdict.training-correct { color: #39745b; }
 .training-result-moves { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 8px; }

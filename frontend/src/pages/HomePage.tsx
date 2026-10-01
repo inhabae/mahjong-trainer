@@ -26,6 +26,19 @@ function normalizeTile(tile: string) {
 function actionTile(action: string | null): string | null {
   return action?.match(/([0-9][mps]r?|[1-7]z|[東南西北中發白]|[epwsfcn])/u)?.[1] ?? null;
 }
+function isTileToken(token: string): boolean {
+  return /^(?:[0-9][mps]r?|[1-7]z|[東南西北中發白]|[epwsfcn])$/u.test(token);
+}
+function calledMeldLabel(kind: string): string {
+  const normalizedKind = kind.toLowerCase();
+  if (normalizedKind === "chi" || normalizedKind === "chii") return "You called chi";
+  if (normalizedKind === "pon") return "You called pon";
+  if (["kan", "minkan", "daiminkan"].includes(normalizedKind)) return "You called kan";
+  return "Your called meld";
+}
+function ActionWithTiles({ action }: { action: string }) {
+  return <span className="training-action-label">{action.split(/\s+/).map((part, index) => isTileToken(part) ? <Tile key={`${part}-${index}`} tile={part} /> : <span key={`${part}-${index}`}>{part}</span>)}</span>;
+}
 function sameTile(left: string | null, right: string | null): boolean {
   return left !== null && right !== null && normalizeTile(left) === normalizeTile(right);
 }
@@ -36,7 +49,15 @@ function isPassAction(action: string): boolean {
   return /^(pass|skip|スルー|見送る)(?:\b|$)/iu.test(action.trim());
 }
 function isCallAction(action: string): boolean {
-  return /^(chi|chii|pon|kan|minkan|daiminkan|チー|ポン|カン)(?:\b|\s|$)/iu.test(action.trim());
+  return /^(chi|chii|pon|kan|minkan|daiminkan|ron|チー|ポン|カン|ロン)(?:\b|\s|$)/iu.test(action.trim());
+}
+function callActionPriority(action: string): number {
+  if (/^(ron|ロン)(?:\b|\s|$)/iu.test(action.trim())) return 0;
+  if (/^(kan|minkan|daiminkan|カン)(?:\b|\s|$)/iu.test(action.trim())) return 1;
+  if (/^(pon|ポン)(?:\b|\s|$)/iu.test(action.trim())) return 2;
+  if (/^(chi|chii|チー)(?:\b|\s|$)/iu.test(action.trim())) return 3;
+  if (isPassAction(action)) return 4;
+  return 5;
 }
 function isCallDecision(actions: string[]): boolean {
   return actions.some(isPassAction) && actions.some(isCallAction);
@@ -295,7 +316,7 @@ interface TrainingResult {
   playerPolicy: string | null;
 }
 
-function TrainingPanel({ decisionNumber, total, isCall, callTile, callOptions, result, canNext, onCallSelect, onNext, onSkip }: { decisionNumber: number; total: number; isCall: boolean; callTile: string | null; callOptions: string[]; result: TrainingResult | null; canNext: boolean; onCallSelect: (action: string) => void; onNext: () => void; onSkip: () => void }) {
+function TrainingPanel({ decisionNumber, total, isCall, callTile, callLabel, drawTile, postCallMeld, callOptions, result, canNext, onCallSelect, onNext, onSkip }: { decisionNumber: number; total: number; isCall: boolean; callTile: string | null; callLabel: string; drawTile: string | null; postCallMeld: Meld | null; callOptions: string[]; result: TrainingResult | null; canNext: boolean; onCallSelect: (action: string) => void; onNext: () => void; onSkip: () => void }) {
   return <aside className="training-panel" aria-live="polite">
     <header className="training-panel-header">
       <div className="training-panel-head"><span className="eyebrow">TRAINING</span><span className="training-decision-index">{String(decisionNumber).padStart(2, "0")} / {total}</span></div>
@@ -303,13 +324,16 @@ function TrainingPanel({ decisionNumber, total, isCall, callTile, callOptions, r
     </header>
     <div className="training-panel-body">
       {!result ? <>
-        {isCall ? <div className="training-call-prompt"><div className="training-offered-discard"><span>Opponent discard</span>{callTile && <b><Tile tile={callTile} />{callTile}</b>}</div><span>Call or pass?</span>{callOptions.map((action) => <button type="button" className="training-call-choice" key={action} onClick={() => onCallSelect(action)}>{action}</button>)}</div> : <div className="training-select-hint">Your move</div>}
+        <div className="training-question">
+          {(isCall || drawTile || postCallMeld) && <div className="training-question-tile"><span>{isCall ? callLabel : postCallMeld ? calledMeldLabel(postCallMeld.kind) : "Your draw"}</span>{isCall && callTile ? <b><Tile tile={callTile} /></b> : drawTile ? <b><Tile tile={drawTile} /></b> : postCallMeld && <div className="training-question-meld"><MeldArea seat="bottom" callerSeat={0} melds={[postCallMeld]} /></div>}</div>}
+          {isCall ? <><span className="training-select-hint">Call or pass?</span>{callOptions.map((action) => <button type="button" className="training-call-choice" key={action} onClick={() => onCallSelect(action)}><ActionWithTiles action={action} /></button>)}</> : <span className="training-select-hint">Choose a discard.</span>}
+        </div>
         <button type="button" className="training-skip" disabled={!canNext} onClick={onSkip}>Skip question →</button>
       </> : <>
       <div className={`training-verdict ${result.correct ? "training-correct" : ""}`}>{result.correct ? "CORRECT" : result.severity?.toUpperCase() ?? "MISTAKE"}</div>
       <div className="training-result-moves">
-        <div><span>YOU</span><b>{result.selectedAction ?? (result.selectedTile ? <><Tile tile={result.selectedTile} />{result.selectedTile}</> : "—")}</b></div>
-        <div><span>MORTAL</span><b>{result.mortalAction ?? (result.mortalTile ? <><Tile tile={result.mortalTile} />{result.mortalTile}</> : "—")}</b></div>
+        <div><span>YOU</span><b>{result.selectedAction ? <ActionWithTiles action={result.selectedAction} /> : result.selectedTile ? <Tile tile={result.selectedTile} /> : "—"}</b></div>
+        <div><span>MORTAL</span><b>{result.mortalAction ? <ActionWithTiles action={result.mortalAction} /> : result.mortalTile ? <Tile tile={result.mortalTile} /> : "—"}</b></div>
       </div>
       <div className="training-policy-delta"><span className="training-policy-player">{result.playerPolicy ?? "—"}</span><span className="training-policy-arrow">→</span><span className="training-policy-mortal">{result.mortalPolicy ?? "—"}</span></div>
       <button className="training-primary" disabled={!canNext} onClick={onNext}>Next</button>
@@ -433,7 +457,9 @@ export function HomePage() {
   if (!decision) return <main className="app-shell"><section className="workspace"><h1>No review decisions</h1><p>{sourceFile} contains no highlighted decisions.</p></section></main>;
   const boardState = decision.state;
   const callDecision = isCallDecision(boardState.legal_actions);
-  const callOptions = boardState.legal_actions.filter((action) => isCallAction(action) || isPassAction(action));
+  const callOptions = boardState.legal_actions
+    .filter((action) => isCallAction(action) || isPassAction(action))
+    .sort((left, right) => callActionPriority(left) - callActionPriority(right) || left.localeCompare(right, undefined, { numeric: true }));
   const analyzedPlayer = boardState.analyzed_player;
   const boardPlayers = [0, 1, 2, 3].map((relativeSeat) => {
     const sourceSeat = (analyzedPlayer + relativeSeat) % 4;
@@ -456,7 +482,12 @@ export function HomePage() {
   };
   const boardHand = relativeBoardState.concealed_hand;
   const drawnTile = callDecision ? null : relativeBoardState.drawn_tile;
+  const playerMelds = boardPlayers[0]!.melds;
+  const postCallMeld = !callDecision && !drawnTile && playerMelds.length > 0 && boardHand.length === 14 - 3 * playerMelds.length
+    ? playerMelds[playerMelds.length - 1]!
+    : null;
   const callFromSeat = callDecision ? relativeCallSeat(boardState.call_from) : null;
+  const callLabel = callFromSeat === 3 ? "Kamicha's discard" : callFromSeat === 2 ? "Toimen's discard" : callFromSeat === 1 ? "Shimocha's discard" : "Opponent discard";
   const score = (seat: number) => boardPlayers[seat]!.score;
   const pond = (seat: number) => {
     const discards = boardPlayers[seat]!.discards;
@@ -513,7 +544,7 @@ export function HomePage() {
     <section className="workspace trainer-workspace">
       <div className="training-layout">
         <div className="training-board"><div className="table-wrap"><MahjongTable boardState={relativeBoardState} score={score} pond={pond} meldTiles={meldTiles} closedCount={closedCount} boardHand={boardHand} drawnTile={drawnTile} onTileSelect={submitted || callDecision ? undefined : submitDiscard} drawKey={decision.id} /></div></div>
-        <TrainingPanel decisionNumber={decisionNumber} total={reportDecisions.length} isCall={callDecision} callTile={boardState.call_tile} callOptions={callOptions} result={result} canNext={selected + 1 < reportDecisions.length} onCallSelect={submitCall} onNext={nextProblem} onSkip={nextProblem} />
+        <TrainingPanel decisionNumber={decisionNumber} total={reportDecisions.length} isCall={callDecision} callTile={boardState.call_tile} callLabel={callLabel} drawTile={drawnTile} postCallMeld={postCallMeld} callOptions={callOptions} result={result} canNext={selected + 1 < reportDecisions.length} onCallSelect={submitCall} onNext={nextProblem} onSkip={nextProblem} />
       </div>
     </section>
   </main>;
