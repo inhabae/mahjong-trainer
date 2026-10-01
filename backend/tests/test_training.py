@@ -138,9 +138,20 @@ def test_relearning_default_button_transitions(store, rating, expected_state):
     assert result.state == expected_state
     if expected_state == "relearning":
         assert result.learning_step == 0
-        assert result.due_at == NOW + timedelta(minutes=10)
+        expected_minutes = 10 if rating == 1 else 15
+        assert result.due_at == NOW + timedelta(minutes=expected_minutes)
     else:
         assert result.learning_step is None
+
+
+def test_relearning_easy_interval_is_after_good(store):
+    scheduler = TrainingScheduler(enable_fuzzing=False)
+    item = create(store).model_copy(update={"state": "relearning", "learning_step": 0,
+        "stability": 2.0, "difficulty": 5.0, "interval_days": 2.0,
+        "last_reviewed_at": NOW - timedelta(days=2)})
+    results = scheduler.preview(item, NOW)
+    assert results[3].state == results[4].state == "review"
+    assert results[4].interval_days >= results[3].interval_days + 1
 
 
 def test_multiple_consecutive_review_schedules(store):

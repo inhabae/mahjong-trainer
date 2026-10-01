@@ -95,8 +95,7 @@ class TrainingScheduler:
         card, _ = self._scheduler.review_card(self._card(item), Rating(rating), reviewed_at)
         return card
 
-    @staticmethod
-    def _state_result(item: TrainingItem, rating: int, card: Card,
+    def _state_result(self, item: TrainingItem, rating: int, card: Card,
                       reviewed_at: datetime) -> tuple[CardState, int | None, datetime]:
         """Apply Anki's default 1m/10m learning and 10m relearning behavior."""
         step = TrainingScheduler._step(item)
@@ -121,9 +120,25 @@ class TrainingScheduler:
             if rating == 1:
                 return "relearning", 0, reviewed_at + DEFAULT_RELEARNING_STEPS[0]
             if rating == 2:
-                return "relearning", 0, reviewed_at + DEFAULT_RELEARNING_STEPS[0]
+                # Anki's Hard interval for a single learning step is 150% of
+                # that step (the same special case used for a one-step learn).
+                return "relearning", 0, reviewed_at + DEFAULT_RELEARNING_STEPS[0] * 1.5
             # Good graduates after the only 10-minute relearning step. Easy
-            # always graduates immediately.
+            # always graduates immediately, and must follow Good's interval.
+            if rating == 4:
+                good_card = self._fsrs_result(item, 3, reviewed_at)
+                good_days = self._rounded_review_interval(
+                    (good_card.due - reviewed_at).total_seconds() / SECONDS_PER_DAY,
+                    1, item.id,
+                )
+                easy_days = self._rounded_review_interval(
+                    (card.due - reviewed_at).total_seconds() / SECONDS_PER_DAY,
+                    good_days + 1, item.id,
+                )
+                card = Card(card_id=card.card_id, state=State.Review,
+                            stability=card.stability, difficulty=card.difficulty,
+                            due=reviewed_at + timedelta(days=easy_days),
+                            last_review=card.last_review)
             return "review", None, card.due
 
         if item.state == "review" and rating == 1:
@@ -145,13 +160,17 @@ class TrainingScheduler:
             upper += 1
         return lower, upper
 
-    def _rounded_review_interval(self, interval: float, minimum: int, card_id: int) -> int:
+    def _rounded_review_interval(self, interval: float, minimum: int, card_id: int,
+                                 rating: int | None = None) -> int:
         minimum = min(minimum, DEFAULT_MAXIMUM_INTERVAL_DAYS)
         if not self._enable_fuzzing:
             return min(DEFAULT_MAXIMUM_INTERVAL_DAYS, max(minimum, _anki_round(interval)))
         lower, upper = self._fuzz_bounds(interval, minimum)
         # Anki selects from the bounded fuzz range via a per-card factor. The
         # persistence model has no such factor, so use a stable per-card value.
+        # Anki derives a repeatable factor from card id plus review count; the
+        # model currently lacks reps in this call, so keep a stable per-card
+        # approximation.
         factor = random.Random(card_id).random()
         return min(DEFAULT_MAXIMUM_INTERVAL_DAYS,
                    int(lower + factor * (1 + upper - lower)))
