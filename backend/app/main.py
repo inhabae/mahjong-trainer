@@ -1,7 +1,8 @@
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from functools import lru_cache
+from datetime import datetime, timezone
 import json
 import gzip
 from threading import Lock
@@ -13,6 +14,7 @@ from app.parsers.mjai_reviewer import MalformedReportError, UnsupportedReportErr
 from app.analysis.reconstruction import reconstruct_report
 from app.analysis.ukeire import analyze_discard, calculate_effective_tiles, calculate_shanten, normalize_tile
 from app.training.source_identity import decision_id, source_game_id
+from app.training.store import TrainingStore
 
 app = FastAPI(title="Riichi Mahjong Trainer API", version="0.1.0")
 app.include_router(training_router)
@@ -125,13 +127,13 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/reports/default")
-async def default_report() -> dict:
+async def default_report(store: TrainingStore = Depends(get_store)) -> dict:
     """Serve the precomputed default report; rebuild it with the parse script."""
     try:
         with gzip.open(DEFAULT_REPORT_CACHE, "rt", encoding="utf-8") as cache:
             report = json.load(cache)
         game_id = _default_source_game_id()
-        get_store().register_source(game_id, DEFAULT_REPORT.name, report["decisions"])
+        store.register_source(game_id, DEFAULT_REPORT.name, report["decisions"])
         report["source_game_id"] = game_id
         return report
     except (OSError, json.JSONDecodeError) as exc:
@@ -249,7 +251,7 @@ async def reconstruct_uploaded_report(file: UploadFile = File(...)) -> dict:
 
 
 @app.post("/api/reports/review")
-async def review_uploaded_report(file: UploadFile = File(...)) -> dict:
+async def review_uploaded_report(file: UploadFile = File(...), store: TrainingStore = Depends(get_store)) -> dict:
     if not file.filename or not file.filename.lower().endswith(".html"):
         raise HTTPException(status_code=415, detail="Upload an .html mjai-reviewer report")
     try:
@@ -258,7 +260,7 @@ async def review_uploaded_report(file: UploadFile = File(...)) -> dict:
         game_id = source_game_id(parsed)
         decisions = [{**item.model_dump(), "id": decision_id(item.round_id, item.decision_index)}
                      for item in reconstructed.decisions]
-        get_store().register_source(game_id, file.filename, decisions)
+        store.register_source(game_id, file.filename, decisions, datetime.now(timezone.utc))
         highlighted = [item for item in reconstructed.decisions if item.severity in {"MISTAKE", "INACCURACY"}]
         debug = [
             f"{item.state.round_label or item.round_id} Turn {item.state.turn}\n"
@@ -280,11 +282,16 @@ async def review_uploaded_report(file: UploadFile = File(...)) -> dict:
 
 
 @app.get("/api/training-sources/{source_id}/decisions")
-def training_source_decisions(source_id: str) -> dict:
-    decisions = get_store().source_decisions(source_id)
+def training_source_decisions(source_id: str, store: TrainingStore = Depends(get_store)) -> dict:
+    decisions = store.source_decisions(source_id)
     if decisions is None:
         raise HTTPException(
             status_code=404,
             detail=f"Source game '{source_id}' is unavailable. Re-upload the original game report to restore its review positions.",
         )
     return {"source_game_id": source_id, "decisions": decisions}
+
+
+@app.get("/api/training-sources")
+def training_sources(store: TrainingStore = Depends(get_store)) -> list[dict]:
+    return store.sources()

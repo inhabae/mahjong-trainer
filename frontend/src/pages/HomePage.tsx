@@ -1,7 +1,7 @@
 import { MemoryRatingControls } from "../components/MemoryRatingControls";
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
-import { fetchDefaultReplay, fetchDefaultReview, fetchHealth, fetchTrainingAnnotations, fetchTrainingItems, fetchDueTrainingItems, fetchTrainingSourceDecisions, saveTrainingAnnotation, fetchTrainingMistakes, resetTrainingProgress, saveTrainingMistake } from "../api/client";
-import type { MistakeHistory, MistakeRecord } from "../api/client";
+import { fetchDefaultReplay, fetchDefaultReview, fetchHealth, fetchTrainingAnnotations, fetchTrainingItems, fetchDueTrainingItems, fetchTrainingSourceDecisions, fetchTrainingSources, importTrainingReport, saveTrainingAnnotation, fetchTrainingMistakes, resetTrainingProgress, saveTrainingMistake } from "../api/client";
+import type { MistakeHistory, MistakeRecord, TrainingSource } from "../api/client";
 import type { ActionEvaluation, DecisionCategory, GameState, Meld, PlayerState, ReplayEvent, ReplayResponse, ReconstructedDecision, Severity } from "../types/review";
 import type { TrainingItem } from "../types/training";
 
@@ -332,7 +332,12 @@ function MahjongTable({ boardState, score, pond, meldTiles, closedCount, boardHa
 }
 
 function ProductTopbar({ onNavigate, navigateLabel, online }: { onNavigate: () => void; navigateLabel: string; online?: boolean }) {
-  return <header className="topbar"><div className="topbar-title">Title Placeholder</div><div className="topbar-actions">{online !== undefined && <><span className="api-dot" data-online={online} /><span>{online ? "Synced" : "Local"}</span></>}<button className="topbar-navigation" onClick={onNavigate}>{navigateLabel}</button></div></header>;
+  return <header className="topbar"><div className="topbar-title">Riichi Study</div><div className="topbar-actions">{online !== undefined && <><span className="api-dot" data-online={online} /><span>{online ? "Synced" : "Local"}</span></>}<button className="topbar-navigation" onClick={onNavigate}>{navigateLabel}</button></div></header>;
+}
+
+type MainView = "home" | "training" | "stats" | "debug";
+function MainNavigation({ view, online, onNavigate, onReplay }: { view: MainView; online: boolean; onNavigate: (view: MainView) => void; onReplay: () => void }) {
+  return <header className="topbar app-navigation"><div className="topbar-title">Riichi Study</div><nav aria-label="Main navigation">{(["home", "training", "stats", "debug"] as const).map((tab) => <button type="button" key={tab} aria-current={view === tab ? "page" : undefined} onClick={() => onNavigate(tab)}>{tab === "home" ? "Home" : tab === "training" ? "Trainer" : tab === "stats" ? "Stats" : "Debug"}</button>)}<button type="button" onClick={onReplay}>Replay</button></nav><div className="topbar-actions"><span className="api-dot" data-online={online} /><span>{online ? "Synced" : "Local"}</span></div></header>;
 }
 
 function MistakeHistoryView({ history, onBack, onReset }: { history: MistakeHistory; onBack: () => void; onReset: () => void }) {
@@ -488,13 +493,19 @@ export function HomePage() {
   const [reportDecisions, setReportDecisions] = useState<TrainingDecision[]>([]);
   const [allReportDecisions, setAllReportDecisions] = useState<TrainingDecision[]>([]);
   const [trainingItems, setTrainingItems] = useState<TrainingItem[]>([]);
+  const [trainingSources, setTrainingSources] = useState<TrainingSource[]>([]);
+  const [debugItems, setDebugItems] = useState<TrainingItem[]>([]);
   const [sourceFile, setSourceFile] = useState("default report");
+  const [sourceFilename, setSourceFilename] = useState("Default report");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [replay, setReplay] = useState<ReplayResponse | null>(null);
   const [replayError, setReplayError] = useState<string | null>(null);
   const [replayLoading, setReplayLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<"training" | "replay">("training");
+  const [viewMode, setViewMode] = useState<MainView | "replay">("home");
   const [dueReviewMode, setDueReviewMode] = useState(false);
   const [dueReviewError, setDueReviewError] = useState<string | null>(null);
   const [showMistakeHistory, setShowMistakeHistory] = useState(false);
@@ -594,6 +605,7 @@ export function HomePage() {
       const sourceGameId = review.source_game_id ?? review.source_file;
       const savedItems = await fetchTrainingItems(sourceGameId);
       setSourceFile(sourceGameId);
+      setSourceFilename(review.source_file);
       setTrainingItems(savedItems);
       setServerAnnotationsReady(true);
       const saved: Record<string, DecisionCategory> = { ...categoryAssignments };
@@ -602,6 +614,7 @@ export function HomePage() {
       localStorage.setItem(categoryStorageKey, JSON.stringify(saved));
       const reviewDecisions = review.decisions.map(toTrainingDecision).map((item) => ({ ...item, category: saved[item.id] ?? item.category }));
       setAllReportDecisions(reviewDecisions.filter((item) => item.severity === "MISTAKE" || item.severity === "INACCURACY"));
+      setTrainingSources(await fetchTrainingSources());
     }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load the default report")).finally(() => setLoading(false));
   }, []);
   useEffect(() => {
@@ -649,6 +662,7 @@ export function HomePage() {
     }
   };
   const enterDueReview = async () => {
+    setViewMode("training");
     setDueReviewError(null);
     try {
       const dueItems = await fetchDueTrainingItems();
@@ -691,6 +705,68 @@ export function HomePage() {
     setSelectedCall(null);
     setSubmitted(false);
   };
+  const refreshDebug = async () => {
+    try {
+      const sources = await fetchTrainingSources();
+      setTrainingSources(sources);
+      const items = await Promise.all(sources.map((source) => fetchTrainingItems(source.source_game_id)));
+      setDebugItems(items.flat());
+      setImportError(null);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Could not load debug data");
+    }
+  };
+  const changeView = (view: MainView) => {
+    setViewMode(view);
+    if (view === "debug") void refreshDebug();
+  };
+  const importReport = async (file: File) => {
+    setImporting(true); setImportError(null); setImportNotice(null);
+    try {
+      const report = await importTrainingReport(file);
+      const sourceId = report.source_game_id ?? report.source_file;
+      const items = await fetchTrainingItems(sourceId);
+      setSourceFile(sourceId); setSourceFilename(report.source_file); setTrainingItems(items);
+      const decisions = report.decisions.map(toTrainingDecision).map((item) => ({ ...item, sourceGameId: sourceId }));
+      setAllReportDecisions(decisions.filter((item) => item.severity === "MISTAKE" || item.severity === "INACCURACY"));
+      setDueReviewMode(false); setDueReviewError(null); setSelected(0);
+      setSelectedDiscard(null); setSelectedCall(null); setSubmitted(false);
+      setTrainingSources(await fetchTrainingSources());
+      setImportNotice(`${report.source_file} imported. ${decisions.length} review decisions are ready.`);
+      setViewMode("training");
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Could not import this report");
+    } finally { setImporting(false); }
+  };
+  const openSavedSource = async (source: TrainingSource) => {
+    setLoading(true); setError(null);
+    try {
+      const [savedDecisions, items] = await Promise.all([
+        fetchTrainingSourceDecisions(source.source_game_id),
+        fetchTrainingItems(source.source_game_id),
+      ]);
+      setSourceFile(source.source_game_id); setSourceFilename(source.source_filename); setTrainingItems(items);
+      const decisions = savedDecisions.map(toTrainingDecision).map((item) => ({ ...item, sourceGameId: source.source_game_id }));
+      setAllReportDecisions(decisions.filter((item) => item.severity === "MISTAKE" || item.severity === "INACCURACY"));
+      setDueReviewMode(false); setSelected(0); setSelectedDiscard(null); setSelectedCall(null); setSubmitted(false);
+      setViewMode("training");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open saved match");
+      setViewMode("training");
+    } finally { setLoading(false); }
+  };
+  if (viewMode === "home") return <main className="app-shell home-app-shell"><MainNavigation view="home" online={status === "ok"} onNavigate={changeView} onReplay={() => setViewMode("replay")} /><section className="workspace home-workspace">
+    <h1>Riichi Study</h1>
+    <p className="home-subtitle">Review your decisions. Improve one hand at a time.</p>
+    <div className="home-action-row">
+      <button type="button" className="home-tile home-tile-train" onClick={() => void enterDueReview()}><span className="home-tile-face" aria-hidden="true">白</span><span className="home-tile-label">TRAIN</span><span className="home-tile-description">Review mistakes and train.</span></button>
+      <button type="button" className="home-tile home-tile-stats" onClick={() => changeView("stats")}><span className="home-tile-face" aria-hidden="true">發</span><span className="home-tile-label">STATS</span><span className="home-tile-description">View your progress and statistics.</span></button>
+      <label className={`home-tile home-tile-import${importing ? " is-importing" : ""}`}><input type="file" accept=".html,text/html" disabled={importing} onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void importReport(file); event.currentTarget.value = ""; }} /><span className="home-tile-face" aria-hidden="true">中</span><span className="home-tile-label">{importing ? "IMPORTING" : "IMPORT"}</span><span className="home-tile-description">Import an MJAI review report.</span></label>
+    </div>
+    {importError && <p className="home-message" role="alert">{importError}</p>}{importNotice && <p className="home-message" role="status">{importNotice}</p>}
+  </section></main>;
+  if (viewMode === "stats") return <main className="app-shell"><MainNavigation view="stats" online={status === "ok"} onNavigate={changeView} onReplay={() => setViewMode("replay")} /><section className="workspace stats-workspace"><h1>Stats</h1></section></main>;
+  if (viewMode === "debug") return <main className="app-shell"><MainNavigation view="debug" online={status === "ok"} onNavigate={changeView} onReplay={() => setViewMode("replay")} /><section className="workspace debug-workspace"><span className="eyebrow">DEVELOPMENT</span><h1>Debug data</h1><p>Read-only view of saved match sources and scheduler state.</p>{importError && <p role="alert">{importError}</p>}<div className="debug-summary"><div><b>{trainingSources.length}</b><span>Saved matches</span></div><div><b>{trainingSources.reduce((sum, source) => sum + source.decision_count, 0)}</b><span>Decisions saved</span></div><div><b>{debugItems.length}</b><span>Training cards</span></div><div><b>{debugItems.filter((item) => new Date(item.due_at) <= new Date()).length}</b><span>Due now</span></div></div><h2>Match sources</h2>{trainingSources.map((source) => <article className="debug-source-row" key={source.source_game_id}><div><strong>{source.source_filename}</strong><code>{source.source_game_id}</code></div><span>{source.decision_count} decisions{source.imported_at ? ` · imported ${new Date(source.imported_at).toLocaleString()}` : " · no import date"}</span></article>)}<h2>Scheduler cards</h2>{debugItems.length ? <div className="debug-card-list">{debugItems.map((item) => <article className="debug-card-row" key={item.id}><div><strong>{item.category.replace(/_/g, " ")}</strong><span>{item.source_game_id} · {item.decision_id}</span></div><span>{item.state} · due {new Date(item.due_at).toLocaleString()} · reps {item.reps} · lapses {item.lapses}</span></article>)}</div> : <p>No TrainingItems are saved yet.</p>}</section></main>;
   if (viewMode === "replay") {
     if (replayLoading) return <main className="app-shell"><section className="workspace"><h1>Full Game Replay</h1><p>Loading replay events…</p></section></main>;
     if (replayError) return <main className="app-shell"><section className="workspace"><h1>Replay unavailable</h1><p>{replayError}</p></section></main>;
@@ -700,7 +776,7 @@ export function HomePage() {
   if (showMistakeHistory) return <MistakeHistoryView history={mistakeHistory} onBack={() => setShowMistakeHistory(false)} onReset={() => void resetProgress()} />;
   if (loading) return <main className="app-shell"><section className="workspace"><p>Loading {sourceFile}…</p></section></main>;
   if (error) return <main className="app-shell"><section className="workspace"><h1>Unable to load the default report</h1><p>{error}</p></section></main>;
-  if (!decision) return <main className="app-shell"><ProductTopbar onNavigate={() => setViewMode("replay")} navigateLabel="Replay" online={status === "ok"} /><section className="workspace"><h1>{dueReviewMode ? "No due mistakes" : allReportDecisions.length ? "Deck finished" : "No training discrepancies"}</h1><p>{dueReviewMode ? "You’ve reviewed every currently due mistake." : allReportDecisions.length ? "You’ve finished the deck. No more cards are due within the next 10 minutes." : `${sourceFile} contains no mistakes or inaccuracies to review.`}</p>{dueReviewError && <p role="alert">{dueReviewError}</p>}<button type="button" onClick={dueReviewMode ? exitDueReview : () => void enterDueReview()}>{dueReviewMode ? "Return to Training" : "Review Due Mistakes"}</button>{import.meta.env.DEV && <DevelopmentQueuePanel devDate={devDate} setDevDate={setDevDate} decisions={allReportDecisions} queue={reportDecisions} items={trainingItems} sourceFile={sourceFile} nearDueMode={nearDueMode} cycleReviewed={nearCycleReviewed} currentId={null} />}</section></main>;
+  if (!decision) return <main className="app-shell"><MainNavigation view="training" online={status === "ok"} onNavigate={changeView} onReplay={() => setViewMode("replay")} /><section className="workspace"><h1>{dueReviewMode ? "No due mistakes" : allReportDecisions.length ? "Deck finished" : "No training discrepancies"}</h1><p>{dueReviewMode ? "You’ve reviewed every currently due mistake." : allReportDecisions.length ? "You’ve finished the deck. No more cards are due within the next 10 minutes." : `${sourceFile} contains no mistakes or inaccuracies to review.`}</p>{dueReviewError && <p role="alert">{dueReviewError}</p>}<button type="button" onClick={dueReviewMode ? exitDueReview : () => void enterDueReview()}>{dueReviewMode ? "Return to Training" : "Review Due Mistakes"}</button>{import.meta.env.DEV && <DevelopmentQueuePanel devDate={devDate} setDevDate={setDevDate} decisions={allReportDecisions} queue={reportDecisions} items={trainingItems} sourceFile={sourceFile} nearDueMode={nearDueMode} cycleReviewed={nearCycleReviewed} currentId={null} />}</section></main>;
   const boardState = decision.state;
   const callDecision = isCallDecision(boardState.legal_actions);
   const callOptions = boardState.legal_actions
@@ -789,7 +865,7 @@ export function HomePage() {
   };
   const currentCardReps = trainingItems.find((item) => item.source_game_id === activeSourceId && item.decision_id === decision.id)?.reps ?? 0;
   return <main className="app-shell">
-    <ProductTopbar onNavigate={() => setViewMode("replay")} navigateLabel="Replay" online={status === "ok"} />
+    <MainNavigation view="training" online={status === "ok"} onNavigate={changeView} onReplay={() => setViewMode("replay")} />
     <section className="workspace trainer-workspace">
       <div className="training-session-controls"><div><strong>{dueReviewMode ? "Review Due Mistakes" : "Training session"}</strong><span>{reportDecisions.length} {dueReviewMode ? "due mistakes remaining" : "discrepancies in this session · Inaccuracy and Mistake"}</span>{dueReviewError && <p role="alert">{dueReviewError}</p>}</div><div><button type="button" onClick={dueReviewMode ? exitDueReview : () => void enterDueReview()}>{dueReviewMode ? "Exit due review" : "Review Due Mistakes"}</button><button className="mistake-history-button" onClick={() => setShowMistakeHistory(true)}>Mistake history <b>{mistakeHistory.stats.total}</b></button></div></div>
       {import.meta.env.DEV && <DevelopmentQueuePanel devDate={devDate} setDevDate={setDevDate} decisions={allReportDecisions} queue={reportDecisions} items={trainingItems} sourceFile={sourceFile} nearDueMode={nearDueMode} cycleReviewed={nearCycleReviewed} currentId={decision.id} />}

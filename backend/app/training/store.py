@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS training_items (
 );
 CREATE INDEX IF NOT EXISTS training_items_due ON training_items(due_at, id);
 CREATE TABLE IF NOT EXISTS training_sources (
- source_game_id TEXT PRIMARY KEY, source_filename TEXT NOT NULL, decisions_json TEXT NOT NULL
+ source_game_id TEXT PRIMARY KEY, source_filename TEXT NOT NULL, decisions_json TEXT NOT NULL,
+ imported_at TEXT
 );
 CREATE TABLE IF NOT EXISTS review_logs (
  id INTEGER PRIMARY KEY, training_item_id INTEGER NOT NULL REFERENCES training_items(id),
@@ -56,6 +57,9 @@ class TrainingStore:
         self.path = path
         with self.connection() as connection:
             connection.executescript(SCHEMA)
+            source_columns = {row["name"] for row in connection.execute("PRAGMA table_info(training_sources)")}
+            if "imported_at" not in source_columns:
+                connection.execute("ALTER TABLE training_sources ADD COLUMN imported_at TEXT")
 
     @contextmanager
     def connection(self):
@@ -97,14 +101,16 @@ class TrainingStore:
                 "SELECT * FROM training_items WHERE source_game_id = ? ORDER BY id", (source_game_id,))]
 
     def register_source(self, source_game_id: str, source_filename: str,
-                        decisions: list[dict]) -> None:
+                        decisions: list[dict], imported_at: datetime | None = None) -> None:
         """Persist reconstructed positions and migrate filename-keyed items."""
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO training_sources (source_game_id, source_filename, decisions_json) "
-                "VALUES (?, ?, ?) ON CONFLICT(source_game_id) DO UPDATE SET "
-                "source_filename = excluded.source_filename, decisions_json = excluded.decisions_json",
-                (source_game_id, source_filename, json.dumps(decisions, separators=(",", ":"))),
+                "INSERT INTO training_sources (source_game_id, source_filename, decisions_json, imported_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(source_game_id) DO UPDATE SET "
+                "source_filename = excluded.source_filename, decisions_json = excluded.decisions_json, "
+                "imported_at = COALESCE(training_sources.imported_at, excluded.imported_at)",
+                (source_game_id, source_filename, json.dumps(decisions, separators=(",", ":")),
+                 timestamp(imported_at) if imported_at else None),
             )
             # Older app versions keyed items by filename. Move those rows to
             # the durable ID when there is no canonical row for that decision.
@@ -120,6 +126,15 @@ class TrainingStore:
                 (source_game_id,),
             ).fetchone()
             return json.loads(row["decisions_json"]) if row else None
+
+    def sources(self) -> list[dict]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT source_game_id, source_filename, imported_at, "
+                "json_array_length(decisions_json) AS decision_count "
+                "FROM training_sources ORDER BY imported_at DESC, source_filename, source_game_id"
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def reset_progress(self) -> None:
         """Reset scheduling state for every card, preserving immutable review logs."""

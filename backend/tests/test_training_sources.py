@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 
 from fastapi.testclient import TestClient
 
@@ -9,7 +10,7 @@ from app.models.training import CreateTrainingItem
 from app.parsers.mjai_reviewer import parse_mjai_reviewer_html
 from app.analysis.reconstruction import reconstruct_report
 from app.training.source_identity import decision_id, source_game_id
-from app.training.store import TrainingStore
+from app.training.store import TrainingStore, timestamp
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -56,6 +57,11 @@ def test_renamed_uploads_share_identity_and_do_not_duplicate_training_items(tmp_
             duplicate = client.post("/api/training-items", json=body).json()
             assert duplicate["id"] == created["id"]
             assert len(store.for_source(body["source_game_id"])) == 1
+            sources = client.get("/api/training-sources").json()
+            assert len(sources) == 1
+            assert sources[0]["source_filename"] == "renamed.html"
+            assert sources[0]["imported_at"] is not None
+            assert sources[0]["decision_count"] > 0
     finally:
         app.dependency_overrides.clear()
 
@@ -111,3 +117,19 @@ def test_missing_source_returns_recoverable_error(tmp_path):
         assert "Re-upload the original game report" in response.json()["detail"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_existing_source_database_is_upgraded_with_import_date(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE training_sources (source_game_id TEXT PRIMARY KEY, "
+            "source_filename TEXT NOT NULL, decisions_json TEXT NOT NULL)"
+        )
+
+    store = TrainingStore(path)
+    imported_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    store.register_source("game-id", "match.html", [], imported_at)
+    source, = store.sources()
+    assert source["imported_at"] == timestamp(imported_at)
+    assert source["decision_count"] == 0

@@ -121,6 +121,34 @@ export async function fetchTrainingSourceDecisions(sourceGameId: string): Promis
   return value.decisions;
 }
 
+export type TrainingSource = {
+  source_game_id: string;
+  source_filename: string;
+  imported_at: string | null;
+  decision_count: number;
+};
+
+export async function fetchTrainingSources(): Promise<TrainingSource[]> {
+  const response = await fetch(`${API_BASE}/training-sources`);
+  if (!response.ok) throw new Error(`Saved matches failed (${response.status})`);
+  return response.json() as Promise<TrainingSource[]>;
+}
+
+export async function importTrainingReport(file: File): Promise<ReviewResponse> {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(`${API_BASE}/reports/review`, { method: "POST", body });
+  if (!response.ok) {
+    let message = `Import failed (${response.status})`;
+    try {
+      const value = await response.json() as { detail?: string };
+      if (value.detail) message = value.detail;
+    } catch { /* Keep the status-based message for non-JSON responses. */ }
+    throw new Error(message);
+  }
+  return response.json() as Promise<ReviewResponse>;
+}
+
 export async function fetchTrainingItems(sourceGameId: string): Promise<TrainingItem[]> {
   const response = await fetch(`${API_BASE}/training-items?source_game_id=${encodeURIComponent(sourceGameId)}`);
   if (!response.ok) throw new Error(`Training progress failed (${response.status})`);
