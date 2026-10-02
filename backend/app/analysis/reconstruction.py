@@ -1,11 +1,16 @@
 """Deterministic, visibility-safe reconstruction of report decisions."""
 
+from collections import Counter
+
 from app.models.game_state import GameState, PlayerState, ReplayStep, ReconstructedDecision, ReconstructedReport
 from app.models.report import ParsedReport, Round
 from app.analysis.ukeire import action_tile, compare_actions, normalize_tile
 from app.analysis.safety import classify_decisions
 from app.analysis.severity import severity_for_decision, temperature_warning
-from app.analysis.tenhou_replay import replay_round
+from app.analysis.tenhou_replay import _encoded_tiles, replay_round
+
+
+KAN_EVENTS = {"kan", "ankan", "kakan", "minkan"}
 
 
 def _header(round_: Round) -> tuple[int | None, int | None, int | None, list[int | None]]:
@@ -115,7 +120,6 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
         if public_replay:
             normal_draws = 0
             tiles_remaining = 70
-            kan_actions = {"kan", "ankan", "kakan"}
             for step_index, (event, snapshot) in enumerate(zip(public_replay.events, public_replay.event_snapshots)):
                 analyzed_hand = (public_replay.analyzed_hand_snapshots[step_index]
                                  if step_index < len(public_replay.analyzed_hand_snapshots) else [])
@@ -126,10 +130,10 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
                     # ordering in the source snapshot.
                     analyzed_hand = list(analyzed_hand)
                     analyzed_hand.pop(len(analyzed_hand) - 1 - analyzed_hand[::-1].index(drawn_tile))
-                if event.kind == "draw" and (step_index == 0 or public_replay.events[step_index - 1].kind not in kan_actions):
+                if event.kind == "draw" and (step_index == 0 or public_replay.events[step_index - 1].kind not in KAN_EVENTS):
                     normal_draws += 1
                     tiles_remaining = max(0, 70 - normal_draws)
-                kan_count = sum(item.kind in kan_actions for item in public_replay.events[:step_index + 1])
+                kan_count = sum(item.kind in KAN_EVENTS for item in public_replay.events[:step_index + 1])
                 replay_state = GameState(
                     round_id=round_.id, round_label=round_.label, dealer=dealer,
                     honba=honba, kyotaku=event.kyotaku, scores=scores,
@@ -157,18 +161,60 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
             # row, so indexing by ``index`` advances the public board one
             # turn too far after such a row.
             snapshot_index = decision.turn - 1 if decision.turn is not None else index
-            replay_prefix = public_replay.events[:snapshot_index + 1] if public_replay else []
-            kan_actions = {"kan", "ankan", "kakan"}
+            event_prefix_end = (
+                public_replay.event_indices_before_analyzed_discards[snapshot_index]
+                if public_replay
+                and 0 <= snapshot_index < len(public_replay.event_indices_before_analyzed_discards)
+                else 0
+            )
+            # A reaction row is shown after the opponent's offered discard.
+            # The turn snapshot above is taken before the analyzed player's
+            # discard, so advance through the current response window. Calls
+            # already remove the called tile from that river in replay state.
+            is_reaction = decision.call_tile is not None or not _reported_discard_tile(decision.actual_action)
+            if public_replay and is_reaction:
+                own_discard_events = [
+                    event_index for event_index, event in enumerate(public_replay.events)
+                    if event.seat == player and event.kind in {"discard", "riichi"}
+                ]
+                if 0 <= snapshot_index < len(own_discard_events):
+                    own_discard_event = own_discard_events[snapshot_index]
+                    if own_discard_event < len(public_replay.events):
+                        boundary = own_discard_event + 1
+                        while boundary < len(public_replay.events):
+                            event = public_replay.events[boundary]
+                            # Continue through an opponent draw/discard pair;
+                            # stop once the offered discard is recorded.
+                            boundary += 1
+                            if event.kind in {"discard", "riichi"} and event.seat != player:
+                                break
+                        event_prefix_end = max(event_prefix_end, boundary)
+            # When the report's selected response is a call, show the call
+            # already applied: the source tile leaves its river and the new
+            # meld appears beside the concealed hand.
+            reported_call = (decision.actual_action or "").strip().lower()
+            is_reported_call = reported_call.startswith(("chi", "chii", "pon", "kan", "minkan", "daiminkan", "チー", "ポン", "カン"))
+            if public_replay and is_reported_call:
+                matching_call = next((
+                    event_index for event_index, event in enumerate(public_replay.events)
+                    if event.seat == player and event.kind in {"chi", "pon", "minkan", "ankan", "kakan"}
+                    and event_index >= event_prefix_end
+                    and (not decision.call_tile or event.raw and normalize_tile(decision.call_tile) in [normalize_tile(tile) for tile in _encoded_tiles(event.raw)])
+                ), None)
+                if matching_call is not None:
+                    event_prefix_end = max(event_prefix_end, matching_call + 1)
+            replay_prefix = public_replay.events[:event_prefix_end] if public_replay else []
             normal_draw_count = sum(
                 event.kind == "draw"
-                and (event_index == 0 or replay_prefix[event_index - 1].kind not in kan_actions)
+                and (event_index == 0 or replay_prefix[event_index - 1].kind not in KAN_EVENTS)
                 for event_index, event in enumerate(replay_prefix)
             )
-            replay_players = (
-                public_replay.snapshots_before_analyzed_discards[snapshot_index]
-                if public_replay and 0 <= snapshot_index < len(public_replay.snapshots_before_analyzed_discards)
-                else [item.model_copy(deep=True) for item in players]
-            )
+            if public_replay and is_reported_call and event_prefix_end > 0:
+                replay_players = public_replay.event_snapshots[event_prefix_end - 1]
+            elif public_replay and 0 <= snapshot_index < len(public_replay.snapshots_before_analyzed_discards):
+                replay_players = public_replay.snapshots_before_analyzed_discards[snapshot_index]
+            else:
+                replay_players = [item.model_copy(deep=True) for item in players]
             if public_replay and 0 <= snapshot_index < len(public_replay.snapshots_before_analyzed_discards):
                 # A call decision can reuse the snapshot for the analyzed
                 # player's turn, even though their preceding discard has
@@ -179,12 +225,27 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
                 available_snapshot_indices: dict[str, list[int]] = {}
                 for river_index, tile in enumerate(replay_players[player].discards):
                     available_snapshot_indices.setdefault(normalize_tile(tile), []).append(river_index)
+                called_from_player = Counter()
+                if event_prefix_end > 0:
+                    for event_index, event in enumerate(public_replay.events[:event_prefix_end]):
+                        if event.kind not in {"chi", "pon", "minkan"}:
+                            continue
+                        melds = public_replay.event_snapshots[event_index][event.seat].melds
+                        if melds and melds[-1].called_from == player and melds[-1].called_tile:
+                            called_from_player[normalize_tile(melds[-1].called_tile)] += 1
                 for reported_index, tile in enumerate(players[player].discards):
                     normalized = normalize_tile(tile)
                     matching_indices = available_snapshot_indices.get(normalized, [])
                     if matching_indices:
                         river_index = matching_indices.pop(0)
                     else:
+                        # The report's own action history still includes a
+                        # discard after another player calls it. Do not
+                        # restore that consumed tile into the reconstructed
+                        # river when reconciling the two histories.
+                        if called_from_player[normalized]:
+                            called_from_player[normalized] -= 1
+                            continue
                         river_index = len(replay_players[player].discards)
                         replay_players[player].discards.append(tile)
                     if reported_index in players[player].tsumogiri_discard_indices and river_index not in replay_players[player].tsumogiri_discard_indices:
@@ -196,7 +257,7 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
                 round_label=round_.label,
                 dealer=dealer,
                 honba=honba,
-                kyotaku=kyotaku,
+                kyotaku=replay_prefix[-1].kyotaku if replay_prefix else kyotaku,
                 scores=scores,
                 analyzed_player=player,
                 turn=decision.turn,
@@ -207,7 +268,7 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
                 call_tile_is_riichi=_call_tile_is_riichi(
                     public_replay, player, decision.turn, decision.call_tile, decision.call_from
                 ),
-                dora_indicators=(public_replay.dora_indicators[:1 + sum(item.kind in {"kan", "ankan", "kakan"} for item in public_replay.events[:snapshot_index + 1])] if public_replay else []),
+                dora_indicators=(public_replay.dora_indicators[:1 + sum(item.kind in KAN_EVENTS for item in replay_prefix)] if public_replay else []),
                 legal_actions=[item.action for item in decision.legal_actions],
                 call_tile=decision.call_tile,
                 call_from=decision.call_from,
@@ -243,7 +304,7 @@ def reconstruct_report(report: ParsedReport) -> ReconstructedReport:
         })
         for item, classification in zip(output, classifications)
     ]
-    counts = {key: sum(d.severity == key for d in output) for key in ("MATCH", "MINOR", "INACCURACY", "MISTAKE")}
+    counts = {key: sum(d.severity == key for d in output) for key in ("MATCH", "REASONABLE", "MINOR", "INACCURACY", "MISTAKE")}
     counts["highlighted"] = counts["MISTAKE"] + counts["INACCURACY"]
     warning = temperature_warning(report.metadata.softmax_temperature)
     return ReconstructedReport(analyzed_player=player, decisions=output, replay_steps=replay_steps,

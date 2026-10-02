@@ -204,7 +204,7 @@ def parse_mjai_reviewer_html(document: bytes | str) -> ParsedReport:
     # so recover only the known fields from its text without guessing values.
     metadata_text = " ".join(dl.get_text(" ", strip=True) for dl in soup.select("details dl"))
     known_keys = [
-        "engine", "AI", "model tag", "softmax temperature (τ)", "softmax temperature (t)",
+        "engine", "AI engine", "AI", "model tag", "softmax temperature (τ)", "softmax temperature (t)",
         "game length", "対局の長さ", "player id", "プレイヤーID", "loading time",
         "ロード時間", "review time", "検討時間", "rating", "matches/total",
         "AI一致率", "mjai-reviewer version", "mjai-reviewerバージョン", "生成日時", "generated at",
@@ -212,7 +212,7 @@ def parse_mjai_reviewer_html(document: bytes | str) -> ParsedReport:
     key_pattern = "|".join(re.escape(key) for key in sorted(known_keys, key=len, reverse=True))
     for match in re.finditer(rf"(?P<key>{key_pattern})\s*(?P<value>.*?)(?=\s+(?:{key_pattern})\s*|$)", metadata_text, re.I):
         metadata[match.group("key").lower()] = match.group("value").strip()
-    engine = metadata.get("engine") or metadata.get("ai")
+    engine = metadata.get("engine") or metadata.get("ai engine") or metadata.get("ai")
     if engine != "Mortal":
         raise UnsupportedReportError("The report does not contain Mortal metadata")
 

@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS review_logs (
  response_time_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS review_logs_item ON review_logs(training_item_id, reviewed_at, id);
+CREATE TABLE IF NOT EXISTS review_undo_snapshots (
+ review_log_id INTEGER PRIMARY KEY REFERENCES review_logs(id),
+ training_item_id INTEGER NOT NULL REFERENCES training_items(id),
+ item_before_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_log_undos (
+ review_log_id INTEGER PRIMARY KEY REFERENCES review_logs(id),
+ undone_at TEXT NOT NULL
+);
 CREATE TRIGGER IF NOT EXISTS review_logs_no_update BEFORE UPDATE ON review_logs
  BEGIN SELECT RAISE(ABORT, 'Review history is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS review_logs_no_delete BEFORE DELETE ON review_logs
@@ -146,11 +155,27 @@ class TrainingStore:
                 "stability = NULL, difficulty = NULL, learning_step = NULL, reps = 0, lapses = 0, "
                 "last_reviewed_at = NULL, last_rating = NULL, updated_at = ?", (now,))
 
+    def reset_all(self) -> None:
+        """Delete imported games, training cards, and their review history."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TRIGGER IF EXISTS review_logs_no_delete")
+            connection.execute("DELETE FROM review_log_undos")
+            connection.execute("DELETE FROM review_undo_snapshots")
+            connection.execute("DELETE FROM review_logs")
+            connection.execute("DELETE FROM training_items")
+            connection.execute("DELETE FROM training_sources")
+            connection.execute(
+                "CREATE TRIGGER review_logs_no_delete BEFORE DELETE ON review_logs "
+                "BEGIN SELECT RAISE(ABORT, 'Review history is immutable'); END"
+            )
+
     def review(self, item_id: int, request: ReviewRequest, now: datetime) -> TrainingItem:
         with self.connection() as connection:
             # Serialize read-modify-write across processes, not just threads.
             connection.execute("BEGIN IMMEDIATE")
             before = self._load(connection, item_id)
+            before_json = before.model_dump_json()
             result = schedule_review(before, request.rating, now)
             changes = asdict(result)
             lapse_increment = changes.pop("lapse_increment")
@@ -167,8 +192,57 @@ class TrainingStore:
                 due_at_after=after.due_at, **request.model_dump())
             data = values(log)
             del data["id"]
-            connection.execute("INSERT INTO review_logs (" + ", ".join(data) + ") VALUES (" + ", ".join(f":{key}" for key in data) + ")", data)
+            cursor = connection.execute("INSERT INTO review_logs (" + ", ".join(data) + ") VALUES (" + ", ".join(f":{key}" for key in data) + ")", data)
+            connection.execute(
+                "INSERT INTO review_undo_snapshots (review_log_id, training_item_id, item_before_json) VALUES (?, ?, ?)",
+                (cursor.lastrowid, item_id, before_json),
+            )
             return after
+
+    def undo_review(self, item_id: int, reviewed_at: datetime, now: datetime) -> TrainingItem:
+        """Restore the card snapshot before its latest review and mark that log undone."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = connection.execute(
+                "SELECT id, reviewed_at FROM review_logs WHERE training_item_id = ? ORDER BY id DESC LIMIT 1",
+                (item_id,),
+            ).fetchone()
+            expected_at = timestamp(reviewed_at)
+            if latest is None or latest["reviewed_at"] != expected_at:
+                raise ValueError("Only the most recent training rating can be undone")
+            snapshot = connection.execute(
+                "SELECT item_before_json FROM review_undo_snapshots WHERE review_log_id = ?", (latest["id"],)
+            ).fetchone()
+            if snapshot is None:
+                raise KeyError(item_id)
+            if connection.execute(
+                "SELECT 1 FROM review_log_undos WHERE review_log_id = ?", (latest["id"],)
+            ).fetchone():
+                raise ValueError("This training rating was already undone")
+            before = json.loads(snapshot["item_before_json"])
+            connection.execute(
+                "INSERT INTO review_log_undos (review_log_id, undone_at) VALUES (?, ?)",
+                (latest["id"], timestamp(now)),
+            )
+            data = {key: value for key, value in before.items() if key != "id"}
+            connection.execute(
+                "UPDATE training_items SET " + ", ".join(f"{key} = :{key}" for key in data) + " WHERE id = :id",
+                {**data, "id": item_id},
+            )
+            return self._load(connection, item_id)
+
+    def delete_unreviewed(self, item_id: int) -> None:
+        """Remove a card that was created for a rating that never completed."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._load(connection, item_id) is None:
+                raise KeyError(item_id)
+            has_reviews = connection.execute(
+                "SELECT 1 FROM review_logs WHERE training_item_id = ? LIMIT 1", (item_id,)
+            ).fetchone()
+            if has_reviews:
+                raise ValueError("A reviewed training card cannot be deleted")
+            connection.execute("DELETE FROM training_items WHERE id = ?", (item_id,))
 
     def preview(self, request: CreateTrainingItem, now: datetime) -> dict[int, datetime]:
         item = self.create(request, now)
@@ -178,7 +252,12 @@ class TrainingStore:
         with self.connection() as connection:
             self._load(connection, item_id)
             logs = []
-            for row in connection.execute("SELECT * FROM review_logs WHERE training_item_id = ? ORDER BY reviewed_at, id", (item_id,)):
+            for row in connection.execute(
+                "SELECT review_logs.* FROM review_logs LEFT JOIN review_log_undos "
+                "ON review_log_undos.review_log_id = review_logs.id "
+                "WHERE review_logs.training_item_id = ? AND review_log_undos.review_log_id IS NULL "
+                "ORDER BY review_logs.reviewed_at, review_logs.id", (item_id,)
+            ):
                 data = dict(row)
                 data["was_correct"] = bool(data["was_correct"])
                 logs.append(ReviewLog.model_validate(data))

@@ -51,6 +51,27 @@ def review_item(item_id: int, body: ReviewRequest, at: datetime | None = None, s
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.delete("/{item_id}/review", response_model=TrainingItem)
+def undo_review_item(item_id: int, reviewed_at: datetime, store: TrainingStore = Depends(get_store)):
+    try:
+        return store.undo_review(item_id, reviewed_at, utc_now())
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Training review not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/{item_id}")
+def delete_unreviewed_item(item_id: int, store: TrainingStore = Depends(get_store)):
+    try:
+        store.delete_unreviewed(item_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Training item not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True}
+
+
 @router.get("/{item_id}/reviews", response_model=list[ReviewLog])
 def item_reviews(item_id: int, store: TrainingStore = Depends(get_store)):
     try:

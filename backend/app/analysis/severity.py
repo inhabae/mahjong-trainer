@@ -7,7 +7,7 @@ from app.models.report import Decision
 
 
 MISTAKE_THRESHOLD = 0.05
-INACCURACY_THRESHOLD = 0.10
+REASONABLE_THRESHOLD = 0.20
 EXPECTED_TEMPERATURE = 0.10
 
 
@@ -15,6 +15,8 @@ class Severity(str, Enum):
     MATCH = "MATCH"
     MISTAKE = "MISTAKE"
     INACCURACY = "INACCURACY"
+    REASONABLE = "REASONABLE"
+    # Kept for previously saved training records; new reports use REASONABLE.
     MINOR = "MINOR"
 
 
@@ -45,9 +47,9 @@ def severity_for_decision(decision: Decision) -> dict:
         severity = Severity.MATCH
     elif player_policy is None:
         # Missing policy is not evidence of a strong disagreement.
-        severity = Severity.MINOR
-    elif player_policy >= INACCURACY_THRESHOLD:
-        severity = Severity.MINOR
+        severity = Severity.REASONABLE
+    elif player_policy >= REASONABLE_THRESHOLD:
+        severity = Severity.REASONABLE
     elif player_policy >= MISTAKE_THRESHOLD:
         severity = Severity.INACCURACY
     else:

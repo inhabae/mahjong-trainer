@@ -18,10 +18,12 @@ function formatInterval(dueAt: string, referenceAt?: string): string {
   return `${Math.max(1, Math.round(hours / 24))}d`;
 }
 
-export function MemoryRatingControls({ item, review, onRated, reviewedAt }: {
+export function MemoryRatingControls({ item, review, onRated, onSavingChange, onCreated, reviewedAt }: {
   item: TrainingItemInput;
   review: Omit<TrainingReviewInput, "rating">;
   onRated: (saved: TrainingItem) => void;
+  onSavingChange?: (saving: boolean) => void;
+  onCreated?: (created: TrainingItem) => void;
   reviewedAt?: string;
 }) {
   const pending = useRef(false);
@@ -58,9 +60,11 @@ export function MemoryRatingControls({ item, review, onRated, reviewedAt }: {
     if (pending.current || saved) return;
     pending.current = true;
     setSaving(true);
+    onSavingChange?.(true);
     setError(null);
     try {
       const card = await createTrainingItem(item);
+      onCreated?.(card);
       const savedItem = await reviewTrainingItem(card.id, { ...review, rating }, reviewedAt);
       setSaved(savedItem);
       onRated(savedItem);
@@ -69,6 +73,7 @@ export function MemoryRatingControls({ item, review, onRated, reviewedAt }: {
     } finally {
       pending.current = false;
       setSaving(false);
+      onSavingChange?.(false);
     }
   }
 

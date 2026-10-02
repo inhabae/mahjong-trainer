@@ -30,15 +30,21 @@ def tile_name(value: int) -> str:
 
 
 def _item_tile(item: Any) -> str | None:
-    return tile_name(item) if isinstance(item, int) and item != 60 else None
+    return tile_name(item) if isinstance(item, int) and item not in {0, 60} else None
 
 
 def _encoded_tiles(value: str) -> list[str]:
-    return [tile_name(int(x)) for x in re.findall(r"\d{2}", value)]
+    # Tenhou uses 60 as a control marker for tsumogiri, including riichi
+    # declarations such as "r60". It is not a physical tile code.
+    return [tile_name(int(x)) for x in re.findall(r"\d{2}", value) if int(x) not in {0, 60}]
 
 
 def _call_kind(value: str) -> str | None:
-    match = re.search(r"([cpka])", value)
+    # Tenhou naki entries may put the called tile before the call marker,
+    # e.g. `46p4646` for a pon. Other meld entries begin with the marker.
+    if value[:1] in {"c", "p", "m", "k", "a"}:
+        return value[0]
+    match = re.match(r"\d{2}(?:\d{2})*([cpmka])", value)
     return match.group(1) if match else None
 
 
@@ -62,6 +68,7 @@ class PublicReplay:
     events: list[PublicEvent] = field(default_factory=list)
     event_snapshots: list[list[PlayerState]] = field(default_factory=list)
     snapshots_before_analyzed_discards: list[list[PlayerState]] = field(default_factory=list)
+    event_indices_before_analyzed_discards: list[int] = field(default_factory=list)
     analyzed_hand_snapshots: list[list[str]] = field(default_factory=list)
 
 
@@ -143,6 +150,10 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
         # normal draw.  Do not let a stale draw be reused by a following 60
         # placeholder.
         last_draw[actor] = None
+        # A discard can be claimed by exactly one meld. Clear the reference
+        # before processing the meld so it cannot be reused by a later call.
+        claimed_discard = last_discard_event
+        last_discard_event = None
         tiles = _encoded_tiles(raw)
         if kind == "kakan":
             added_tile = tiles[0] if tiles else None
@@ -168,11 +179,11 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
             players[actor].melds.append(Meld(kind="ankan", tiles=tiles, raw=raw))
             return
         called_from = None
-        if last_discard_event and last_discard_event[0] != actor and last_discard_event[1] in tiles:
-            called_from = last_discard_event[0]
+        if claimed_discard and claimed_discard[0] != actor and claimed_discard[1] in tiles:
+            called_from = claimed_discard[0]
             source_discards = players[called_from].discards
             for index in range(len(source_discards) - 1, -1, -1):
-                if source_discards[index] == last_discard_event[1]:
+                if source_discards[index] == claimed_discard[1]:
                     source_discards.pop(index)
                     if index in players[called_from].riichi_discard_indices:
                         players[called_from].riichi_discard_indices.remove(index)
@@ -187,7 +198,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
                         if marker != index
                     ]
                     break
-        called_tile = last_discard_event[1] if called_from is not None else None
+        called_tile = claimed_discard[1] if called_from is not None else None
         called_index = tiles.index(called_tile) if called_tile in tiles else None
         if called_index is not None:
             for index, tile in enumerate(tiles):
@@ -229,12 +240,15 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
             emit("draw", actor, take, take_item)
         call = _call_kind(take_item) if isinstance(take_item, str) else None
         if call:
-            kind = {"c": "chi", "p": "pon", "k": "kakan", "a": "ankan"}[call]
+            kind = {"c": "chi", "p": "pon", "m": "minkan", "k": "kakan", "a": "ankan"}[call]
             record_meld(actor, kind, take_item)
             emit(kind, actor, None, take_item)
 
         def consume_discard(item: Any) -> tuple[str | None, bool]:
             nonlocal last_discard_event
+            # Zero is Tenhou's empty placeholder after some calls, not a tile.
+            if isinstance(item, int) and item == 0:
+                return None, False
             if isinstance(item, int) and item == 60:
                 tile = last_draw[actor]
                 if tile:
@@ -270,7 +284,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
                 return tile, True
             if isinstance(item, str) and _call_kind(item):
                 call_name = _call_kind(item)
-                kind = {"c": "chi", "p": "pon", "k": "kakan", "a": "ankan"}[call_name]
+                kind = {"c": "chi", "p": "pon", "m": "minkan", "k": "kakan", "a": "ankan"}[call_name]
                 record_meld(actor, kind, item)
                 emit(kind, actor, None, item)
                 return None, False
@@ -278,6 +292,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
 
         if analyzed_player == actor:
             replay.snapshots_before_analyzed_discards.append(public_player_copies(players))
+            replay.event_indices_before_analyzed_discards.append(len(replay.events))
         item = discards[positions[actor]]
         positions[actor] += 1
         last_discard, is_discard = consume_discard(item)
@@ -285,8 +300,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
         # following 60 values in this mjlog are later tsumogiri discards, so
         # they must remain in the discard stream and be consumed by later
         # turns normally.
-        if not is_discard and isinstance(item, str) and _call_kind(item):
-            actor = actor
+        if not is_discard and ((isinstance(item, str) and _call_kind(item)) or item == 0):
             continue
         # A matching naki in the next take stream overrides normal shimocha.
         next_actor = None
@@ -304,9 +318,7 @@ def replay_round(original_game_log: dict[str, Any], analyzed_player: int | None 
                 and last_discard_event is not None
                 and last_discard_event[1] in _encoded_tiles(next_item)
                 # A chi can only be called from the immediately preceding
-                # seat.  Without this constraint, a matching chi in another
-                # player's take stream can claim the discard and corrupt
-                # called_from/source direction metadata.
+                # seat. Pon and kan may claim from any opponent.
                 and (next_call != "c" or candidate == (last_discard_event[0] + 1) % 4)
             ):
                 next_actor = candidate

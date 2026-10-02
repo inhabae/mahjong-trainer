@@ -9,6 +9,7 @@ from threading import Lock
 
 from pydantic import BaseModel
 from app.api.training import get_store, router as training_router
+from app.models.game_state import GameState
 
 from app.parsers.mjai_reviewer import MalformedReportError, UnsupportedReportError, parse_mjai_reviewer_html
 from app.analysis.reconstruction import reconstruct_report
@@ -34,12 +35,17 @@ ANNOTATIONS_FILE = Path(__file__).resolve().parents[1] / "training_annotations.j
 MISTAKES_FILE = Path(__file__).resolve().parents[1] / "training_mistakes.json"
 _annotation_lock = Lock()
 TRAINING_CATEGORIES = {"CALL_DECISION", "RIICHI_DECISION", "PUSH_FOLD", "BETAORI", "TILE_EFFICIENCY", "ENDGAME_PLACEMENT"}
-TRAINING_SEVERITIES = {"MINOR", "INACCURACY", "MISTAKE"}
+TRAINING_SEVERITIES = {"REASONABLE", "MINOR", "INACCURACY", "MISTAKE"}
 
 
 class TrainingAnnotation(BaseModel):
     category: str
     confirmed: bool = True
+
+
+class UndoAnnotation(BaseModel):
+    expected_category: str
+    previous_annotation: TrainingAnnotation | None = None
 
 
 class MistakeRecord(BaseModel):
@@ -52,6 +58,52 @@ class MistakeRecord(BaseModel):
     mortal_action: str | None = None
     mortal_policy: float | None = None
     reviewed_at: str
+
+
+class UndoMistakeRecord(BaseModel):
+    decision_id: str
+    source_file: str
+    reviewed_at: str
+    previous_record: MistakeRecord | None = None
+
+
+class RiichiCheckRequest(BaseModel):
+    state: GameState
+    discard: str
+
+
+@app.post("/api/analysis/riichi-check")
+def riichi_check(body: RiichiCheckRequest) -> dict:
+    state = body.state
+    if not 0 <= state.analyzed_player < len(state.players):
+        raise HTTPException(status_code=422, detail="Invalid analyzed player")
+    player = state.players[state.analyzed_player]
+    hand = list(state.concealed_hand) + ([state.drawn_tile] if state.drawn_tile else [])
+    wanted = normalize_tile(body.discard)
+    tile_index = next((index for index, tile in enumerate(hand) if normalize_tile(tile) == wanted), None)
+    if tile_index is None:
+        raise HTTPException(status_code=422, detail="Selected discard is not in the hand")
+    discard = hand.pop(tile_index)
+    melds = player.melds
+    shanten = calculate_shanten(hand, melds)
+    analyzed_players = [item.model_copy(deep=True) for item in state.players]
+    analyzed_players[state.analyzed_player].discards.append(discard)
+    post_discard_state = state.model_copy(update={
+        "concealed_hand": hand, "drawn_tile": None, "players": analyzed_players,
+    })
+    effective = calculate_effective_tiles(post_discard_state, hand, melds) if shanten == 0 else {}
+    tenpai = shanten == 0
+    score = state.scores[state.analyzed_player] if state.analyzed_player < len(state.scores) else None
+    closed_hand = all(meld.kind == "ankan" for meld in melds)
+    can_riichi = bool(tenpai and closed_hand and score is not None and score >= 1000
+                      and (state.tiles_remaining is None or state.tiles_remaining > 0)
+                      and not player.riichi)
+    return {
+        "tenpai": tenpai,
+        "can_riichi": can_riichi,
+        "waits": [{"tile": tile, "remaining": remaining} for tile, remaining in effective.items()],
+        "ukeire": sum(effective.values()),
+    }
 
 
 def read_annotations() -> dict[str, dict]:
@@ -77,6 +129,21 @@ def save_training_annotation(decision_id: str, annotation: TrainingAnnotation) -
         annotations[decision_id] = annotation.model_dump()
         ANNOTATIONS_FILE.write_text(json.dumps(annotations, indent=2, sort_keys=True) + "\n")
     return {"decision_id": decision_id, **annotation.model_dump()}
+
+
+@app.post("/api/training/annotations/{decision_id:path}/undo")
+def undo_training_annotation(decision_id: str, body: UndoAnnotation) -> dict:
+    with _annotation_lock:
+        annotations = read_annotations()
+        current = annotations.get(decision_id)
+        if current is None or current.get("category") != body.expected_category:
+            raise HTTPException(status_code=409, detail="The saved category has changed since this answer")
+        if body.previous_annotation is None:
+            annotations.pop(decision_id, None)
+        else:
+            annotations[decision_id] = body.previous_annotation.model_dump()
+        ANNOTATIONS_FILE.write_text(json.dumps(annotations, indent=2, sort_keys=True) + "\n")
+    return {"ok": True}
 
 
 def read_mistakes() -> list[dict]:
@@ -105,10 +172,25 @@ def save_training_mistake(record: MistakeRecord) -> dict:
     with _annotation_lock:
         records = read_mistakes()
         # One canonical saved result per source decision; retaking updates it.
+        previous_record = next((item for item in records if item.get("decision_id") == record.decision_id and item.get("source_file") == record.source_file), None)
         records = [item for item in records if not (item.get("decision_id") == record.decision_id and item.get("source_file") == record.source_file)]
         records.append(record.model_dump())
         MISTAKES_FILE.write_text(json.dumps(records, indent=2, sort_keys=True) + "\n")
-    return {"record": record.model_dump()}
+    return {"record": record.model_dump(), "previous_record": previous_record}
+
+
+@app.post("/api/training/mistakes/undo")
+def undo_training_mistake(body: UndoMistakeRecord) -> dict:
+    with _annotation_lock:
+        records = read_mistakes()
+        current = next((item for item in records if item.get("decision_id") == body.decision_id and item.get("source_file") == body.source_file), None)
+        if current is not None and current.get("reviewed_at") != body.reviewed_at:
+            raise HTTPException(status_code=409, detail="The saved answer has changed since this question")
+        records = [item for item in records if not (item.get("decision_id") == body.decision_id and item.get("source_file") == body.source_file)]
+        if body.previous_record is not None:
+            records.append(body.previous_record.model_dump())
+        MISTAKES_FILE.write_text(json.dumps(records, indent=2, sort_keys=True) + "\n")
+    return {"ok": True}
 
 
 @app.delete("/api/training/progress")
@@ -116,8 +198,17 @@ def reset_training_progress() -> dict:
     """Clear mistake history and restart all spaced-repetition schedules."""
     with _annotation_lock:
         MISTAKES_FILE.write_text("[]\n")
-    from app.api.training import get_store
-    get_store().reset_progress()
+        get_store().reset_progress()
+    return {"ok": True}
+
+
+@app.delete("/api/training/data")
+def reset_all_training_data() -> dict:
+    """Delete imported games, training history, saved mistakes, and categories."""
+    with _annotation_lock:
+        MISTAKES_FILE.write_text("[]\n")
+        ANNOTATIONS_FILE.write_text("{}\n")
+        get_store().reset_all()
     return {"ok": True}
 
 

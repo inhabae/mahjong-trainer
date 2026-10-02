@@ -12,7 +12,7 @@ class CreateTrainingItem(BaseModel):
     source_game_id: str = Field(min_length=1)
     decision_id: str = Field(min_length=1)
     category: Literal["CALL_DECISION", "RIICHI_DECISION", "PUSH_FOLD", "BETAORI", "TILE_EFFICIENCY", "ENDGAME_PLACEMENT", "UNCLASSIFIED"]
-    severity: Literal["MATCH", "MINOR", "INACCURACY", "MISTAKE"]
+    severity: Literal["MATCH", "REASONABLE", "MINOR", "INACCURACY", "MISTAKE"]
 
 
 class TrainingItem(CreateTrainingItem):

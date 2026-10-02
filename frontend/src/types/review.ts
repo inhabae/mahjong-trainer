@@ -1,4 +1,4 @@
-export type Severity = "MATCH" | "MINOR" | "INACCURACY" | "MISTAKE";
+export type Severity = "MATCH" | "REASONABLE" | "MINOR" | "INACCURACY" | "MISTAKE";
 export type DecisionCategory = "CALL_DECISION" | "RIICHI_DECISION" | "PUSH_FOLD" | "BETAORI" | "TILE_EFFICIENCY" | "ENDGAME_PLACEMENT" | "UNCLASSIFIED";
 
 export interface DiscardSafety {

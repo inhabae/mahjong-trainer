@@ -1,7 +1,6 @@
 import type { ReviewLog, TrainingItem, TrainingItemInput, TrainingReviewInput } from "../types/training";
 import type { HealthResponse } from "../types/health";
-import type { ReplayResponse, ReviewResponse } from "../types/review";
-import type { ReconstructedDecision } from "../types/review";
+import type { GameState, ReplayResponse, ReviewResponse, ReconstructedDecision } from "../types/review";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
 
@@ -61,16 +60,32 @@ export async function fetchTrainingMistakes(): Promise<MistakeHistory> {
   return response.json() as Promise<MistakeHistory>;
 }
 
-export async function resetTrainingProgress(): Promise<void> {
-  const response = await fetch(`${API_BASE}/training/progress`, { method: "DELETE" });
-  if (!response.ok) throw new Error(`Reset progress failed (${response.status})`);
+export async function resetTrainingData(): Promise<void> {
+  const response = await fetch(`${API_BASE}/training/data`, { method: "DELETE" });
+  if (!response.ok) throw new Error(`Reset training data failed (${response.status})`);
 }
 
-export async function saveTrainingMistake(record: MistakeRecord): Promise<void> {
+export async function saveTrainingMistake(record: MistakeRecord): Promise<{ previous_record: MistakeRecord | null }> {
   const response = await fetch(`${API_BASE}/training/mistakes`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(record),
   });
   if (!response.ok) throw new Error(`Saving mistake failed (${response.status})`);
+  return response.json() as Promise<{ previous_record: MistakeRecord | null }>;
+}
+
+export async function undoTrainingMistake(input: Pick<MistakeRecord, "decision_id" | "source_file" | "reviewed_at"> & { previous_record: MistakeRecord | null }): Promise<void> {
+  const response = await fetch(`${API_BASE}/training/mistakes/undo`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`Undoing saved answer failed (${response.status})`);
+}
+
+export async function undoTrainingAnnotation(decisionId: string, expectedCategory: string, previousCategory: string | null): Promise<void> {
+  const response = await fetch(`${API_BASE}/training/annotations/${encodeURIComponent(decisionId)}/undo`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expected_category: expectedCategory, previous_annotation: previousCategory ? { category: previousCategory, confirmed: true } : null }),
+  });
+  if (!response.ok) throw new Error(`Undoing saved category failed (${response.status})`);
 }
 
 export async function createTrainingItem(input: TrainingItemInput): Promise<TrainingItem> {
@@ -88,6 +103,27 @@ export async function reviewTrainingItem(id: number, input: TrainingReviewInput,
   });
   if (!response.ok) throw new Error(`Saving memory rating failed (${response.status})`);
   return response.json() as Promise<TrainingItem>;
+}
+
+export async function undoTrainingReview(id: number, reviewedAt: string): Promise<TrainingItem> {
+  const query = `?reviewed_at=${encodeURIComponent(reviewedAt)}`;
+  const response = await fetch(`${API_BASE}/training-items/${id}/review${query}`, { method: "DELETE" });
+  if (!response.ok) throw new Error(`Undoing training rating failed (${response.status})`);
+  return response.json() as Promise<TrainingItem>;
+}
+
+export async function deleteUnreviewedTrainingItem(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE}/training-items/${id}`, { method: "DELETE" });
+  if (!response.ok) throw new Error(`Removing unfinished training card failed (${response.status})`);
+}
+
+export type RiichiCheck = { tenpai: boolean; can_riichi: boolean; waits: { tile: string; remaining: number }[]; ukeire: number };
+export async function checkRiichiDiscard(state: GameState, discard: string): Promise<RiichiCheck> {
+  const response = await fetch(`${API_BASE}/analysis/riichi-check`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state, discard }),
+  });
+  if (!response.ok) throw new Error(`Riichi check failed (${response.status})`);
+  return response.json() as Promise<RiichiCheck>;
 }
 
 export async function previewTrainingItem(input: TrainingItemInput, at?: string): Promise<Record<number, string>> {
